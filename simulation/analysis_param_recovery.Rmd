@@ -1,0 +1,310 @@
+---
+title: "Analysis of simulation study results"
+author: "Niek Den Teuling"
+date: "2022-12-07"
+params:
+  experiment: sim_finalc
+  recovery: Bias
+  Rhat: 1.1
+  alphaCor: .95
+output:
+  html_document: 
+    toc: yes
+    highlight: tango
+    number_sections: yes
+---
+
+```{r}
+RHAT_LIM = as.numeric(params$Rhat)
+ALPHA_COR = as.numeric(params$alphaCor)
+recovery = params$recovery
+simConds = c('Model', 'data.numGroups', 'data.fixed', 'data.randomSigma', 'data.cv')
+
+dtAllModels = readRDS(file.path(RESULTS_DIR, paste0(params$experiment, '.rds')))
+
+dtModels = copy(dtAllModels) %>%
+  .[, Model := factor(Model, levels = c('GMM', 'RV-GMM', 'MV-GMM', 'RMV-GMM'))] %>%
+  .[, AllConverged := ConvProp == 1] %>%
+  .[, AlphaErr := AlphaCor > ALPHA_COR] %>%
+  .[data.fixed != 'Equal' | data.cv != 'None'] %>%
+  .[data.tStart == 0] %>%
+  .[]
+
+# drop duplicate entries
+allConds = c('nClusters', 'seed', 'formula', grep('^data\\.', names(dtModels), value = TRUE))
+
+if (anyDuplicated(dtModels, by = allConds)) {
+  dtModels[, .(NumDup = sum(duplicated(.SD, by = allConds))), by = Model][order(-NumDup)]
+  dtModels = dtModels[!duplicated(dtModels, by = c('Model', allConds))] 
+}
+
+dtModels[, i := seq_len(.N)]
+dtModels[, .N, by = Model]
+
+if (anyNA(dtAllModels$i)) {
+  warning('some simulation conditions are undefined (i is NA)')
+}
+```
+
+# Preparation
+## Results per model parameter
+```{r, results='hide'}
+rhatCols = grep('^Rhat\\.', names(dtModels), value = TRUE) %>% sort()
+rhatCoefs = sub('^Rhat\\.', '', rhatCols)
+dtRhat = melt(
+  dtModels, 
+  id.vars = c(simConds, 'i'), 
+  measure.vars = rhatCols,
+  variable.name = 'Coef',
+  value.name = 'Rhat'
+) %>%
+  .[, Coef := factor(Coef, levels = rhatCols, labels = rhatCoefs)] %>%
+  .[, Converged := Rhat < RHAT_LIM] %>%
+  .[]
+
+allCols = names(dtModels) %>% sort()
+refCols = grep('\\.ref$', allCols, value = TRUE)
+estCols = grep('\\.est$', allCols, value = TRUE)
+lowCols = grep('^HDI\\..+\\.lower$', allCols, value = TRUE)
+upCols = grep('^HDI\\..+\\.upper$', allCols, value = TRUE)
+coefCols = sub('\\.ref$', '', refCols)
+
+assert_that(
+  length(refCols) == length(estCols),
+  length(lowCols) == length(upCols),
+  length(refCols) == length(lowCols),
+  all(str_starts(estCols, fixed(coefCols)))
+)
+
+dtCoefs = melt(
+  dtModels, 
+  id.vars = c(simConds, 'AllConverged', 'AlphaErr', 'i'), 
+  measure.vars = list(Est = estCols, Low = lowCols, Up = upCols, Ref = refCols), 
+  variable.name = 'Coef'
+) %>%
+  .[, Coef := factor(Coef, labels = coefCols)] %>%
+  merge(dtRhat[, .(i, Coef, Model, Rhat, Converged)], by = c('i', 'Coef', 'Model'))
+
+assert_that(
+  nrow(dtCoefs) > 0,
+  noNA(dtCoefs$Model),
+  nrow(dtCoefs) == nrow(dtRhat)
+)
+
+dtCoefStats = dtCoefs[, .(
+  Bias = mean(Est - Ref, na.rm = TRUE), 
+  Bias.SE = se(Est - Ref),
+  RMSE = sqrt(mean((Est - Ref) ^ 2, na.rm = TRUE)),
+  MAE = mean(abs(Est - Ref), na.rm = TRUE),
+  CR = mean(Ref >= Low & Ref <= Up, na.rm = TRUE)
+  ), 
+  keyby = c(simConds, 'Coef')
+]
+```
+
+## Results per converged model
+```{r}
+dtConvModels = dtModels[AllConverged == TRUE & AlphaErr == FALSE]
+dtConvCoefs = dtCoefs[AllConverged == TRUE & AlphaErr == FALSE]
+
+dtConvCoefStats = dtConvCoefs[, .(
+    N = sum(is.finite(Est)),
+    Bias = mean(Est - Ref, na.rm = TRUE), 
+    Bias.SE = se(Est - Ref),
+    RMSE = sqrt(mean((Est - Ref) ^ 2, na.rm = TRUE)),
+    MAE = mean(abs(Est - Ref), na.rm = TRUE),
+    CR = mean(Ref >= Low & Ref <= Up, na.rm = TRUE)
+  ), 
+  keyby = c(simConds, 'Coef')
+]
+# class-aggregated coefficient index
+dtConvCoefStats[, BaseCoef := sub('\\.k\\.\\d\\.?', '', Coef)]
+```
+
+## Data coefficient sets
+```{r}
+allArgs = dtCoefs$Coef %>% unique() %>% as.character()
+allArgs2 = dtCoefs[data.numGroups == 2, Coef] %>% unique() %>% as.character()
+
+fixedArgs = allArgs[startsWith(allArgs, 'fixed')]
+fixedArgs2 = intersect(allArgs2, fixedArgs)
+fixedArgsIS = grep('i.[12]', fixedArgs, value = TRUE)
+
+cvArgs = allArgs[startsWith(allArgs, 'cv')]
+cvArgs2 = intersect(allArgs2, cvArgs)
+
+randomArgs = allArgs[startsWith(allArgs, 'random')]
+randomArgs2 = intersect(allArgs2, randomArgs)
+
+scaleArgs = c(randomArgs, allArgs[startsWith(allArgs, 'sigma')])
+scaleArgs2 = intersect(allArgs2, scaleArgs)
+```
+
+
+# Convergence
+Compute complete convergence per model.
+```{r}
+dtAllConv = dtRhat[
+  data.fixed == 'Partial', 
+  .(AllConverged = mean(Rhat < RHAT_LIM, na.rm = TRUE) > .99), 
+  keyby=.(Model, i)
+] %>%
+  .[, mean(AllConverged), by=Model] %T>% 
+  print()
+
+dtModels[, .(ConvergenceProp = mean(AllConverged), nConverged = sum(AllConverged))]
+dtModels[, 
+  .(ConvergenceProp = mean(AllConverged), nConverged = sum(AllConverged)), 
+  keyby=Model
+]
+
+dtModels[, 
+  .(ConvergenceProp = any(AllConverged)), 
+  by = c('data.numGroups', 'data.fixed', 'data.randomSigma', 'data.cv', 'data.seed')
+] %>% 
+  .[, mean(ConvergenceProp)]
+```
+
+Proportion of simulated datasets with a converged model.
+```{r}
+dtModels[, any(AllConverged), keyby = c(simConds, 'data.seed')][, mean(V1), by = Model]
+```
+
+## Alpha error
+```{r}
+dtModels[, .(AlphaErrProp = mean(AlphaErr, na.rm = TRUE)), keyby=Model]
+
+dtModels[, .(AlphaErrProp = mean(AlphaErr, na.rm = TRUE)), keyby=.(Model, data.fixed, nClusters)][order(-AlphaErrProp)]
+
+# among converged models (identical rate)
+dtModels[AllConverged == TRUE, .(AlphaErrProp = mean(AlphaErr, na.rm = TRUE)), keyby=Model]
+```
+
+# Classification agreement
+```{r}
+dtConvModels[, .(ARI = meanText(AdjustedRand)), keyby=.(Model, data.fixed, data.numGroups, data.cv, data.randomSigma)] %>%
+  dcast(... ~ Model, value.var = 'ARI') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_ari.csv'))
+```
+
+# Parameter recovery
+
+## Fixed effects
+```{r}
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'None' &
+    is.finite(get(recovery)) & 
+    Coef %in% fixedArgsIS,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_fixed_partial_nocv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'HighDesc' &
+    is.finite(get(recovery)) & 
+    Coef %in% fixedArgsIS,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_fixed_partial_cv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Equal' &
+    data.cv == 'HighDesc' &
+    is.finite(get(recovery)) & 
+    Coef %in% fixedArgsIS,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_fixed_equal_cv.csv'))
+```
+
+## CV
+```{r}
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'None' &
+    is.finite(get(recovery)) & 
+    Coef %in% cvArgs,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_cv_partial_nocv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'HighDesc' &
+    is.finite(get(recovery)) & 
+    Coef %in% cvArgs,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_cv_partial_cv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Equal' &
+    data.cv == 'HighDesc' &
+    is.finite(get(recovery)) & 
+    Coef %in% cvArgs,
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.numGroups, data.randomSigma, Coef, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_cv_equal_cv.csv'))
+```
+
+
+## Random sigma scale
+```{r}
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'None' &
+    is.finite(get(recovery)) &
+    Coef == 'randomSigma',
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.fixed, data.numGroups, data.cv, data.randomSigma, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_randomSigma_partial_nocv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Partial' &
+    data.cv == 'HighDesc' &
+    is.finite(get(recovery)) &
+    Coef == 'randomSigma',
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.fixed, data.numGroups, data.cv, data.randomSigma, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_randomSigma_partial_cv.csv'))
+
+dtConvCoefStats[
+  data.fixed == 'Equal' &
+    is.finite(get(recovery)) &
+    Coef == 'randomSigma',
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(data.fixed, data.numGroups, data.cv, data.randomSigma, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_randomSigma_equal_cv.csv'))
+```
+
+## Sigma
+```{r}
+dtConvCoefStats[
+  is.finite(get(recovery)) &
+  Coef == 'sigma',
+  .(Metric = meanText(get(recovery))), 
+  keyby=.(Coef, data.fixed, data.numGroups, data.cv, data.randomSigma, Model)
+] %>%
+  dcast(... ~ Model, value.var = 'Metric') %T>% 
+  readr::write_csv(file = paste0(params$experiment, '_', recovery, '_sigma.csv'))
+```

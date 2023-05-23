@@ -1,0 +1,119 @@
+---
+title: "COVID state analysis"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+editor_options: 
+  chunk_output_type: inline
+params:
+  state: Kansas
+  minDate: 2020-03-01
+  maxDate: 2022-01-01
+---
+
+```{r setup, include=FALSE}
+state = params$state
+minDate = as.Date(params$minDate)
+maxDate = as.Date(params$maxDate)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+```{r}
+alldata = load_csse_covid19_data()
+
+data = alldata %>%
+  .[State == state] %>%
+  .[Date %between% c(minDate, maxDate)] %>%
+  .[Population > 0]
+```
+
+```{r}
+countyData = data %>%
+  .[, Confirmed7 := movmeanc(CumConfirmed, 7), by=.(State, County)] %>%
+  .[, NewConfirmed := c(0, diff(CumConfirmed)), by=.(State, County)] %>%
+  .[, NewConfirmed7 := c(0, diff(Confirmed7)), by=.(State, County)]
+```
+
+# Cumulative cases
+
+## State
+```{r}
+print(ggplot(countyData, aes(x = Date, y = CumConfirmed + .1, group = County)) +
+    scale_y_log10() +
+    scale_x_date(breaks = pretty_breaks(10)) +
+    geom_line() +
+    geom_line(aes(y = Confirmed7 + .1), color = 'red', alpha = .5) +
+    labs(title='Confirmed cases', subtitle = state))
+```
+
+# New cases
+## State
+```{r warning=FALSE}
+print(ggplot(countyData, aes(x = Date, y = NewConfirmed + .1, group = County)) +
+    scale_y_log10() +
+    scale_x_date(breaks = pretty_breaks(10)) +
+    geom_line() +
+    geom_line(aes(y = NewConfirmed7 + .1), color = 'red', alpha = .5) +
+    labs(title='New confirmed cases', subtitle = state))
+```
+
+## Counties {.tabset .tabset-pills}
+```{r warning=FALSE, results='asis'}
+counties = unique(data$County) %>% as.character()
+
+for (county in counties) {
+    cat('###', county, '<br>', '\n')
+    
+    plot.new()
+    print(ggplot(countyData[County == county], aes(x = Date, y = NewConfirmed + .1)) +
+        scale_x_date(breaks = pretty_breaks(10)) +
+        geom_line() +
+        geom_line(aes(y = NewConfirmed7 + .1), color = 'red', alpha = .5) +
+        labs(title='New confirmed cases', subtitle = paste0(county, ', ', state)))
+    
+    dev.off()
+    plot.new()
+    dev.off()
+}
+```
+
+
+# Normalized new cases
+## State
+```{r warning=FALSE}
+print(ggplot(countyData, aes(x = Date, y = NewConfirmed / Population * 1e5 + .1, group = County)) +
+    scale_y_log10() +
+    scale_x_date(breaks = pretty_breaks(10)) +
+    geom_line() +
+    geom_line(aes(y = NewConfirmed7 / Population * 1e5 + .1), color = 'red', alpha = .5) +
+    labs(title='New confirmed cases', subtitle = state))
+```
+
+## Counties {.tabset .tabset-pills}
+```{r warning=FALSE, results='asis'}
+counties = unique(data$County) %>% as.character()
+
+for (county in counties) {
+    cat('###', county, '<br>', '\n')
+    
+    plot.new()
+    print(ggplot(countyData[County == county], aes(x = Date, y = NewConfirmed / Population * 1e5 + .1)) +
+        scale_x_date(breaks = pretty_breaks(10)) +
+        geom_line() +
+        geom_line(aes(y = NewConfirmed7 / Population * 1e5 + .1), color = 'red', alpha = .5) +
+        labs(title='New confirmed cases', subtitle = paste0(county, ', ', state)))
+    
+    dev.off()
+    plot.new()
+    dev.off()
+}
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
+

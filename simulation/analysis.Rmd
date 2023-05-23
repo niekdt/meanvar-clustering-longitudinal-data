@@ -1,0 +1,1027 @@
+---
+title: "Analysis of simulation study results"
+author: "Niek Den Teuling"
+date: "`r format(Sys.Date())`"
+params:
+  Rhat: 1.1
+output:
+  html_document: 
+    toc: yes
+    highlight: tango
+    number_sections: yes
+---
+
+```{r setup}
+RHAT_LIM = as.numeric(params$Rhat)
+```
+
+
+```{r, results='hide'}
+suppressPackageStartupMessages({
+  library(effectsize)
+  library(emmeans)
+  library(multcomp)
+})
+```
+
+
+# Load and process results
+Load the model results tables, and combine the results.
+```{r}
+dtGmm = readRDS(file.path(RESULTS_DIR, 'sim_gmm.rds'))
+dtGmmMv = readRDS(file.path(RESULTS_DIR, 'sim_gmm_mv.rds'))
+dtGmmRv = readRDS(file.path(RESULTS_DIR, 'sim_gmm_rv.rds'))
+dtGmmRmv = readRDS(file.path(RESULTS_DIR, 'sim_gmm_rmv.rds'))
+
+dtAllModels = rbindlist(list(
+    GMM = dtGmm,
+    `MV-GMM` = dtGmmMv,
+    `RV-GMM` = dtGmmRv,
+    `RMV-GMM` = dtGmmRmv), 
+  fill = TRUE, idcol = 'Model') %>%
+  .[, Model := factor(Model, levels = c('GMM', 'MV-GMM', 'RV-GMM', 'RMV-GMM'))] %>%
+  .[, data.random := factor(data.random, levels = c('Low', 'High'))]
+
+simConds = c('Model', 'data.numGroups', 'data.fixed', 'data.random', 'data.randomSigma', 'data.cv', 'data.sigma')
+```
+
+Filter the results.
+```{r}
+dtModels = dtAllModels[
+  adapt_delta == .5 &
+  data.fixed != 'Distinct' & 
+  data.cv %in% c('None', 'LowDesc', 'HighDesc') &
+  data.sigma %in% c('Low', 'High') &
+  data.random %in% c('Low', 'High') &
+  data.randomSigma %in% c('None', 'High') &
+  data.numGroups %between% c(2,3) &
+  data.numTraj == 250 &
+  data.numObs == 10 &
+  data.tEnd == 2]
+
+assert_that(nrow(dtModels) > 0, msg = 'filtering produced empty table')
+dtModels[, i := seq_len(.N)]
+```
+
+```{r include=FALSE}
+# check for missing results
+# assert_that(
+#   all(dtModels[ , .N, keyby=simConds]$N == uniqueN(dtModels$data.seed)), 
+#   msg = 'simulation conditions are not uniform in number of evaluation. Did you forget to account for a condition?')
+```
+
+
+## Results per model parameter
+```{r}
+rhatCols = grep('^Rhat\\.', names(dtModels), value = TRUE) %>% sort()
+rhatCoefs = sub('^Rhat\\.', '', rhatCols)
+dtRhat = melt(dtModels, 
+  id.vars = c(simConds, 'i'), 
+  measure.vars = rhatCols,
+  variable.name = 'Coef',
+  value.name = 'Rhat') %>%
+  .[, Coef := factor(Coef, levels = rhatCols, labels = rhatCoefs)] %>%
+  .[, Converged := Rhat < RHAT_LIM] %>%
+  .[]
+```
+
+Compute complete convergence.
+```{r}
+dtAllConv = dtRhat[, .(AllConverged = mean(Rhat < RHAT_LIM, na.rm = TRUE) >= 1), keyby=.(Model, i)]
+
+z = dtModels[dtAllConv[, -'Model'], on = 'i']
+dtModels[, AllConverged := z$AllConverged]
+```
+
+```{r, results='hide'}
+allCols = names(dtModels) %>% sort()
+refCols = grep('\\.ref$', allCols, value = TRUE)
+estCols = grep('\\.est$', allCols, value = TRUE)
+lowCols = grep('^HDI\\..+\\.lower$', allCols, value = TRUE)
+upCols = grep('^HDI\\..+\\.upper$', allCols, value = TRUE)
+coefCols = sub('\\.ref$', '', refCols)
+
+assert_that(
+  length(refCols) == length(estCols),
+  length(lowCols) == length(upCols),
+  length(refCols) == length(lowCols),
+  all(str_starts(estCols, fixed(coefCols)))
+)
+
+dtModelCoefs = melt(dtModels, 
+  id.vars = c(simConds, 'AllConverged', 'i'), 
+  measure.vars = list(Est = estCols, Low = lowCols, Up = upCols, Ref = refCols), 
+  variable.name = 'Coef') %>%
+  .[, Coef := factor(Coef, labels = coefCols)] %>%
+  .[dtRhat[, .(i, Coef, Rhat, Converged)], on = c('i', 'Coef')]
+```
+
+
+## Results per simulation scenario
+```{r}
+qSims = quote(list(AdjustedRand = mean(AdjustedRand, na.rm = TRUE)))
+dtSims = dtModels[, c(eval(qSims),
+  AllConverged = mean(AllConverged, na.rm = TRUE)
+  ), keyby = simConds]
+
+dtAllConvSims = dtModels[AllConverged == TRUE, eval(qSims), keyby = simConds]
+```
+
+
+```{r}
+qCoefSim = quote(
+  .(
+    Bias = mean(Est - Ref, na.rm = TRUE), 
+    Bias.SE = se(Est - Ref),
+    RMSE = sqrt(mean((Est - Ref) ^ 2, na.rm = TRUE)),
+    MAE = mean(abs(Est - Ref), na.rm = TRUE),
+    CR = mean(Ref >= Low & Ref <= Up, na.rm = TRUE),
+    Converged = mean(Converged, na.rm = TRUE),
+    AllConverged = mean(AllConverged, na.rm = TRUE)
+  )
+)
+```
+
+
+```{r}
+dtCoefSims = dtModelCoefs[, eval(qCoefSim), keyby = c(simConds, 'Coef')]
+```
+
+Stratified per converged parameter status
+```{r}
+dtCoefSimsc = dtModelCoefs[, eval(qCoefSim), keyby = c(simConds, 'Coef', 'Converged')]
+```
+
+Converged-only parameters
+```{r}
+dtConvCoefSims = dtModelCoefs[Converged == TRUE, eval(qCoefSim), keyby = c(simConds, 'Coef')]
+dtAllConvCoefSims = dtModelCoefs[AllConverged == TRUE, eval(qCoefSim), keyby = c(simConds, 'Coef')]
+```
+
+
+## Data coefficient sets
+```{r}
+allArgs = dtCoefSims$Coef %>% unique() %>% as.character()
+allArgs2 = dtCoefSims[data.numGroups == 2 & is.finite(MAE), as.character(unique(Coef))]
+
+fixedArgs = allArgs[startsWith(allArgs, 'fixed')]
+fixedArgs2 = intersect(allArgs2, fixedArgs)
+
+cvArgs = allArgs[startsWith(allArgs, 'cv')]
+cvArgs2 = intersect(allArgs2, cvArgs)
+
+randomArgs = allArgs[startsWith(allArgs, 'random')]
+randomArgs2 = intersect(allArgs2, randomArgs)
+
+scaleArgs = c(randomArgs, allArgs[startsWith(allArgs, 'sigma')])
+scaleArgs2 = intersect(allArgs2, scaleArgs)
+```
+
+
+# Overall results
+
+## Model convergence rate
+Complete convergence rate per model.
+```{r}
+qAConv = quote(.(Convergence = mean(AllConverged) %>% pct()))
+dtCoefSims[, eval(qAConv)]
+dtCoefSims[, eval(qAConv), keyby = .(Model)]
+```
+
+```{r, message = FALSE}
+list(
+  All = dtCoefSims[, eval(qAConv), keyby=Model] %>% dcast(. ~ Model),
+  K = dtCoefSims[, eval(qAConv), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Fixed = dtCoefSims[, eval(qAConv), keyby=.(Model, data.fixed)] %>% dcast(data.fixed ~ Model),
+  Random = dtCoefSims[, eval(qAConv), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  CV = dtCoefSims[, eval(qAConv), keyby=.(Model, data.cv)] %>% dcast(data.cv ~ Model),
+  RandomSigma = dtCoefSims[, eval(qAConv), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtCoefSims[, eval(qAConv), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %>%
+  .[]
+```
+
+## Parameter convergence rate
+Overall parameter convergence rate.
+```{r}
+dtModelCoefs[, mean(Rhat < RHAT_LIM, na.rm = TRUE) %>% pct()]
+```
+Parameter convergence rate per model, per scenario.
+```{r, message = FALSE}
+qConv = quote(.(Convergence = meanText(Converged)))
+list(
+  All = dtModelCoefs[, eval(qConv), keyby=Model] %>% dcast(. ~ Model),
+  K = dtModelCoefs[, eval(qConv), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Fixed = dtModelCoefs[, eval(qConv), keyby=.(Model, data.fixed)] %>% dcast(data.fixed ~ Model),
+  Random = dtModelCoefs[, eval(qConv), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  CV = dtModelCoefs[, eval(qConv), keyby=.(Model, data.cv)] %>% dcast(data.cv ~ Model),
+  RandomSigma = dtModelCoefs[, eval(qConv), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtModelCoefs[, eval(qConv), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %T>%
+  write.csv(file.path(TABLES_DIR, 'all_conv.csv'), row.names = FALSE)
+```
+
+Convergence rate per parameter, per model.
+```{r}
+dtModelCoefs[, eval(qConv), keyby=.(Coef, Model)] %>% dcast(Coef ~ Model)
+```
+
+
+## Rhat
+Rhat quantiles per model.
+```{r}
+dtModelCoefs[, as.list(quantile(Rhat, c(0, .75, .9, 1), na.rm=TRUE)), keyby=Model]
+```
+
+
+## ARI
+```{r warning=FALSE}
+qCA = quote(.(Mean = meanText(AdjustedRand)))
+# qCA = quote(.(Mean = paste0(meanText(AdjustedRand), ' N=', length(AdjustedRand))))
+
+list(
+  All = dtModels[, eval(qCA), keyby=Model] %>% dcast(. ~ Model),
+  K = dtModels[, eval(qCA), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Fixed = dtModels[, eval(qCA), keyby=.(Model, data.fixed)] %>% dcast(data.fixed ~ Model),
+  Random = dtModels[, eval(qCA), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  CV = dtModels[, eval(qCA), keyby=.(Model, data.cv)] %>% dcast(data.cv ~ Model),
+  RandomSigma = dtModels[, eval(qCA), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtModels[, eval(qCA), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %T>%
+  write.csv(file.path(TABLES_DIR, 'all_ari.csv'), row.names = FALSE)
+```
+### All converged
+```{r message=FALSE}
+qAllConv = quote(AllConverged == TRUE)
+
+list(
+  All = dtModels[eval(qAllConv), eval(qCA), keyby=Model] %>% dcast(. ~ Model),
+  K = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Fixed = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.fixed)] %>% dcast(data.fixed ~ Model),
+  Random = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  CV = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.cv)] %>% dcast(data.cv ~ Model),
+  RandomSigma = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtModels[eval(qAllConv), eval(qCA), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %>%
+  .[]
+```
+
+## MAE
+Average overall MAE
+```{r}
+dtConvCoefSims[, .(MAE = mean(MAE,na.rm=T)), keyby=Coef]
+```
+
+Table of MAE for all fixed effects, per dataset.
+```{r}
+dtConvCoefSims[Coef %in% fixedArgs & is.finite(MAE), .(Mean = meanText(MAE)), 
+  keyby = .(Model, data.numGroups, data.fixed, Coef)] %>%
+  dcast(data.numGroups + data.fixed + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'all_mae_fixed.csv'), row.names = FALSE)
+```
+
+### Convergence comparison test
+#### All-converged vs converged
+Table of MAE for all-converged parameters and converged parameters.
+```{r, message=FALSE}
+dtAllConvComp = rbind(
+  AllConverged = dtAllConvCoefSims, 
+  ParamConverged = dtCoefSimsc[Converged == TRUE], 
+  idcol = 'Type', fill = TRUE)
+
+dtAllConvComp[, .(MAE = meanText(MAE)), by=Type]
+
+dtAllConvComp[, .(MAE = meanText(MAE)), keyby=.(Type, Coef)] %>% dcast(Coef ~ Type)
+```
+
+
+Test for differences in MAE for complete-convergence models and converged parameters in non-complete models.
+```{r}
+mod_allConvComp = lm(MAE ~ Coef * Type, data = dtAllConvComp)
+
+anova(mod_allConvComp)
+
+emmeans(mod_allConvComp, pairwise ~ Type) %>% 
+  test(side = '<') %>%
+  `$`('contrasts')
+
+emmeans(mod_allConvComp, 'Type', nesting = NULL) %>% 
+  cohens_d()
+```
+Per-coef comparison.
+```{r}
+emmeans(mod_allConvComp, pairwise ~ Type, by = 'Coef', nesting = NULL) %>% 
+  test(side = '>') %>% 
+  `$`('contrasts') %>%
+  as.data.table() %>%
+  .[order(-abs(estimate))]
+
+emmeans(mod_allConvComp, 'Type', by = 'Coef') %>% 
+  cohens_d() %>% 
+  as.data.table() %>%
+  .[order(-abs(effect.size))]
+```
+
+
+#### Converged vs non-converged
+Table of coef MAEs between non-converged and converged parameters.
+```{r}
+dtCoefSimsc[, .(MAE = meanText(MAE)), keyby=.(Coef, Converged)]  %>%
+  dcast(Coef ~ Converged, value.var = 'MAE')
+```
+
+Test for differences in MAE for converged and non-converged parameter estimates.
+No significiant effect.
+```{r}
+mod_convComp = lm(MAE ~ Coef * Converged, data = dtCoefSimsc)
+
+anova(mod_convComp)
+
+emmeans(mod_convComp, pairwise ~ Converged, nesting = NULL) %>%
+  test(side = '>') %>%
+  `$`('contrasts')
+
+emmeans(mod_convComp, 'Converged', nesting = NULL) %>% 
+  cohens_d()
+```
+Per-coef comparison.
+```{r}
+emmeans(mod_convComp, pairwise ~ Converged, by = 'Coef', nesting = NULL) %>% 
+  test(side = '>') %>% 
+  `$`('contrasts') %>%
+  as.data.table() %>%
+  .[order(-abs(estimate))]
+
+emmeans(mod_convComp, 'Converged', by = 'Coef') %>% 
+  cohens_d() %>% 
+  as.data.table() %>%
+  .[order(-effect.size)]
+```
+
+
+### Group trajectory recovery (Partial datasets only)
+Create the fixed MAE table.
+```{r}
+dtConvCoefSims[data.fixed == 'Partial' & Coef %in% fixedArgs & is.finite(MAE), 
+  .(Mean = meanText(MAE)), 
+  keyby = .(Model, data.numGroups, Coef)] %>%
+  dcast(data.numGroups + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'all_mae_fixed.csv'), row.names = FALSE)
+```
+
+
+```{r}
+dtTrajTypeComp = dtConvCoefSims[Coef %in% fixedArgs & data.fixed == 'Partial'] %>%
+  .[, IsMV := data.cv != 'None'] %>%
+  .[, Type := IsMV + 1] %>%
+  .[, FixedI := as.character(Coef) %>% str_sub(-2, -2) %>% as.factor()]
+
+dtTrajTypeComp[, .(MAE = mean(MAE)), 
+  keyby = .(Coef, data.fixed, Type)] %>% 
+  dcast(Coef ~ Type)
+```
+
+
+Test for differences in fixed effects MAE for type 1 and type 2 scenarios.
+```{r}
+mod_fixed = lm(MAE ~ Coef * IsMV, data = dtTrajTypeComp)
+
+anova(mod_fixed)
+
+emmeans(mod_fixed, pairwise ~ IsMV, nesting = NULL) %>%
+  test(side = '>') %>%
+  `$`('contrasts')
+
+emmeans(mod_fixed, 'IsMV', nesting = NULL) %>% 
+  cohens_d()
+```
+Test for effects of conditions.
+```{r}
+mod_fixed_i1 = lm(MAE ~ IsMV + data.numGroups + data.random + data.randomSigma + data.sigma, data = dtTrajTypeComp[FixedI == '1'])
+mod_fixed_i2 = lm(MAE ~ IsMV + data.numGroups + data.random + data.randomSigma + data.sigma, data = dtTrajTypeComp[FixedI == '2'])
+mod_fixed_i3 = lm(MAE ~ IsMV + data.numGroups + data.random + data.randomSigma + data.sigma, data = dtTrajTypeComp[FixedI == '3'])
+
+compConds = c('data.numGroups', 'data.random', 'data.sigma', 'data.randomSigma')
+
+# diff
+pairsTable(list(Fixed1 = mod_fixed_i1, Fixed2 = mod_fixed_i2, Fixed3 = mod_fixed_i3), compConds)
+
+# effect size
+pairsEffTable(list(Fixed1 = mod_fixed_i1, Fixed2 = mod_fixed_i2, Fixed3 = mod_fixed_i3), compConds)
+```
+
+
+
+
+Test lower MAE for MV+RMV against GMM+RV.
+
+```{r}
+testData2 = dtCoefSims[data.cv != 'None' &
+    data.fixed == 'Equal' & 
+    Coef %in% c('fixed[k=1, i=1]', 'fixed[k=2, i=1]')] %>%
+    .[, IsMV := Model %in% c('MV-GMM', 'RMV-GMM')]
+
+mod_allMAEFixedMV2 = lm(MAE ~ Coef + IsMV : Coef + data.cv + data.numGroups, testData2)
+cohens_f(mod_allMAEFixedMV2)
+
+emgrid2 = emmeans(mod_allMAEFixedMV2, 'IsMV')
+test(pairs(emgrid2), null = 0, side = '>', joint = TRUE) # noMV > MV
+```
+
+
+```{r}
+testData = dtCoefSims[data.cv != 'None' &
+    data.fixed == 'Equal' & 
+    Coef %in% c('fixed[k=1, i=1]', 'fixed[k=2, i=1]')] %>%
+    .[, IsMV := Model %in% c('MV-GMM', 'RMV-GMM')] %>%
+  dcast(IsMV + 
+      Model + data.numGroups + data.fixed + data.random + 
+      data.randomSigma + data.cv + data.sigma ~ Coef, value.var = 'MAE') %>%
+  setnames(c('fixed[k=1, i=1]', 'fixed[k=2, i=1]'), c('int1', 'int2'))
+
+#mod_allMAEFixedMV = lm(MAE ~ Coef + Coef : IsMV + data.cv + data.numGroups : data.fixed, testData) %T>% summary()
+
+mod_allMAEFixedMV = lm(cbind(int1, int2) ~ IsMV + data.cv + data.numGroups, testData)
+
+# emgrid = emmeans(mod_allMAEFixedMV, pairwise ~ IsMV, data = testData)
+emgrid = emmeans(mod_allMAEFixedMV, 'IsMV')
+test(pairs(emgrid), null = 0, side = '>') # noMV > MV
+
+cohens_d(emgrid)
+```
+
+### Scales (partial datasets only)
+```{r}
+dtSimsScales = dtConvCoefSims[data.fixed == 'Partial' & Coef %in% scaleArgs] %>%
+  .[, IsMV := data.cv != 'None'] %>%
+  .[, Type := IsMV + 1]
+
+dtSimsScales[, .(MAE = mean(MAE)), 
+  keyby = .(Coef, data.random, Type)] %>% 
+  dcast(data.random + Coef ~ Type)
+
+sameScaleArgs = setdiff(randomArgs, 'randomSigma')
+```
+Create the MAE table.
+```{r}
+dtSimsScales[Coef %in% sameScaleArgs & is.finite(MAE), 
+  .(Mean = meanText(MAE)), 
+  keyby = .(Model, data.random, Coef)] %>%
+  dcast(data.random + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'all_mae_scales.csv'), row.names = FALSE)
+```
+
+Test for different bias of the scale parameters.
+```{r, message = FALSE}
+f = MAE ~ Model * data.numGroups + Model * data.random + Model * data.cv + Model * data.randomSigma + Model * data.sigma
+conds = c('data.numGroups', 'data.random', 'data.randomSigma', 'data.cv', 'data.sigma')
+
+
+scmods = list(
+  R1 = lm(f, data = dtSimsScales[Coef == 'random[i=1]']),
+  R2 = lm(f, data = dtSimsScales[Coef == 'random[i=2]']),
+  R3 = lm(f, data = dtSimsScales[Coef == 'random[i=3]'])
+)
+
+emmTable(scmods, conds)
+pairsTable(scmods, conds)
+pairsEffTable(scmods, conds)
+```
+
+Per model.
+```{r}
+emm2Table(scmods, 'Model', conds)
+```
+
+
+
+## Bias
+### Fixed effects
+Table of bias for all fixed effects, per coef.
+```{r}
+dtConvCoefSims[data.fixed == 'Partial' & Coef %in% fixedArgs, 
+  .(Mean = meanText(Bias)), 
+  keyby = .(Model, data.numGroups, Coef)] %>%
+  dcast(data.numGroups + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'all_bias_fixed.csv'), row.names = FALSE)
+```
+
+### Scales
+Create the bias table.
+```{r}
+dtConvCoefSims[data.fixed == 'Partial' & Coef %in% sameScaleArgs & is.finite(Bias), 
+  .(Mean = meanText(Bias)), 
+  keyby = .(Model, data.random, Coef)] %>%
+  dcast(data.random + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'all_bias_scales.csv'), row.names = FALSE)
+```
+
+# Presence of mean-variance relationship
+```{r}
+dtModelsMV = dtModels[data.cv != 'None' & AllConverged == TRUE] %>%
+  .[, IsMV := Model %in% c('MV-GMM', 'RMV-GMM')] %>%
+  .[]
+dtCoefSimsMV = dtConvCoefSims[data.cv != 'None']
+dtSimsMV = dtAllConvSims[data.cv != 'None']
+```
+
+## ARI
+Test overall effects (over all models).
+```{r}
+mod_ari_main = lm(AdjustedRand ~ data.numGroups + data.fixed + data.random + data.randomSigma + data.cv + data.sigma, data = dtModelsMV)
+
+anova(mod_ari_main)
+
+conds = terms(mod_ari_main) %>% labels()
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_main, cond) %>% 
+    pairs() %>%
+    as.data.table()
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition')
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_main, cond) %>% 
+    cohens_d() %>%
+    as.data.table()
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition')
+```
+Test between MV and non-MV models
+```{r}
+mod_ari_mv = lm(AdjustedRand ~ IsMV * data.numGroups + IsMV * data.fixed + IsMV * data.cv + IsMV * data.random + IsMV * data.randomSigma + IsMV * data.sigma, data = dtModelsMV)
+
+emmeans(mod_ari_mv, 'IsMV') %>% pairs()
+emmeans(mod_ari_mv, 'IsMV') %>% cohens_d()
+
+emmeans(mod_ari_mv, 'IsMV', by='data.randomSigma') %>% pairs()
+emmeans(mod_ari_mv, 'IsMV', by='data.randomSigma') %>% cohens_d()
+
+emmeans(mod_ari_mv, 'data.sigma', by='IsMV') %>% pairs()
+emmeans(mod_ari_mv, 'data.sigma', by='IsMV') %>% cohens_d()
+```
+
+
+
+Test for differences between models.
+```{r}
+mod_ari_model = lm(AdjustedRand ~ Model * data.numGroups + Model * data.fixed + Model * data.cv + Model * data.random + Model * data.randomSigma + Model * data.sigma, data = dtModelsMV)
+
+conds = terms(mod_ari_main) %>% labels()
+
+anova(mod_ari_model)
+
+cohens_f(mod_ari_model)
+
+list(
+  All = emmeans(mod_ari_model, 'Model', nesting = NULL) %>% 
+    as.data.table() %>%
+    .[, Setting := '.'],
+  numGroups = emmeans(mod_ari_model, 'Model', by = 'data.numGroups', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting'),
+  fixed = emmeans(mod_ari_model, 'Model', by = 'data.fixed', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting'),
+  random = emmeans(mod_ari_model, 'Model', by = 'data.random', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting'),
+  randomSigma = emmeans(mod_ari_model, 'Model', by = 'data.randomSigma', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting'),
+  cv = emmeans(mod_ari_model, 'Model', by = 'data.cv', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting'),
+  sigma = emmeans(mod_ari_model, 'Model', by = 'data.sigma', nesting = NULL) %>% 
+      as.data.table() %>%
+      setnames(2, 'Setting')
+) %>%
+  rbindlist(idcol = 'Condition', use.names = TRUE) %>%
+  setcolorder(c('Condition', 'Setting')) %>%
+  dcast(Condition + Setting ~ Model, value.var = 'emmean')
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_model, 'Model', by = cond) %>% 
+    pairs() %>%
+    as.data.table() %>%
+    setnames(2, 'Setting')
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition') %>%
+  .[order(-estimate)]
+
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_model, 'Model', by = cond) %>% 
+    cohens_d() %>%
+    as.data.table() %>%
+    setnames(2, 'Setting')
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition') %>%
+  .[order(-abs(effect.size))]
+```
+
+```{r message=FALSE}
+list(
+  All = dtSimsMV[, eval(qCA), keyby=Model] %>% dcast(. ~ Model),
+  K = dtSimsMV[, eval(qCA), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Fixed = dtSimsMV[, eval(qCA), keyby=.(Model, data.fixed)] %>% dcast(data.fixed ~ Model),
+  Random = dtSimsMV[, eval(qCA), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  CV = dtSimsMV[, eval(qCA), keyby=.(Model, data.cv)] %>% dcast(data.cv ~ Model),
+  RandomSigma = dtSimsMV[, eval(qCA), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtSimsMV[, eval(qCA), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %T>%
+  write.csv(file.path(TABLES_DIR, 'mv_ari.csv'), row.names = FALSE)
+```
+
+## MAE
+```{r}
+qMAE = quote(.(MAE = meanText(MAE)))
+
+dtMAEMV2 = dtCoefSimsMV[Coef %in% allArgs2 & data.numGroups == 2]
+dtMAEMV3 = dtCoefSimsMV[Coef %in% allArgs & data.numGroups == 3]
+```
+
+### Fixed effects
+Table of bias for all fixed effects, per dataset.
+```{r}
+dtCoefSimsMV[Coef %in% fixedArgs & is.finite(MAE), eval(qMAE), 
+  keyby = .(Model, data.numGroups, data.fixed, Coef)] %>%
+  dcast(data.numGroups + data.fixed + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'mv_mae_fixed.csv'), row.names = FALSE)
+```
+
+Table of intercepts, per condition.
+```{r}
+dtMAEMVi = dtCoefSimsMV[Coef == 'fixed[k=1, i=1]']
+list(
+  All = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model)] %>% dcast(. + Coef ~ Model),
+  K = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.numGroups)] %>% dcast(data.numGroups + Coef ~ Model),
+  Fixed = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.fixed)] %>% dcast(data.fixed + Coef ~ Model),
+  Random = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.random)] %>% dcast(data.random + Coef ~ Model),
+  CV = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.cv)] %>% dcast(data.cv + Coef ~ Model),
+  RandomSigma = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.randomSigma)] %>% dcast(data.randomSigma + Coef ~ Model),
+  Sigma = dtMAEMVi[, eval(qMAE), keyby=.(Coef, Model, data.sigma)] %>% dcast(data.sigma + Coef ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %>%
+  setkey(Coef, Par, Setting) %>%
+  .[]
+```
+
+
+### Scales
+Table of MAE for scales, per condition.
+```{r, message = FALSE}
+dtMAEMVsc = dtCoefSimsMV[Coef %in% scaleArgs]
+
+list(
+  All = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model)] %>% dcast(. + Coef ~ Model),
+  K = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.numGroups)] %>% dcast(data.numGroups + Coef ~ Model),
+  Fixed = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.fixed)] %>% dcast(data.fixed + Coef ~ Model),
+  Random = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.random)] %>% dcast(data.random + Coef ~ Model),
+  CV = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.cv)] %>% dcast(data.cv + Coef ~ Model),
+  RandomSigma = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.randomSigma)] %>% dcast(data.randomSigma + Coef ~ Model),
+  Sigma = dtMAEMVsc[, eval(qMAE), keyby=.(Coef, Model, data.sigma)] %>% dcast(data.sigma + Coef ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %>%
+  setkey(Coef, Par, Setting) %>%
+  .[]
+```
+
+
+Manually check for differences in scale coefficients between conditions.
+```{r}
+mod_mae_scales = lm(MAE ~ Model + Coef * data.numGroups + Coef * data.fixed * Model + Coef * data.random + data.cv * Model + Coef * data.randomSigma * Model + Coef * data.sigma, 
+  data = dtCoefSimsMV[Coef %in% scaleArgs])
+
+cohens_f(mod_mae_scales)
+
+emmeans(mod_mae_scales, 'Coef', by = c('Model', 'data.random')) %>% 
+  as.data.table() %>%
+  dcast(Coef + data.random ~ Model, value.var = 'emmean')
+
+emmeans(mod_mae_scales, 'Coef', by = c('Model', 'data.randomSigma')) %>% 
+  as.data.table() %>%
+  dcast(Coef + data.randomSigma ~ Model, value.var = 'emmean')
+
+emmeans(mod_mae_scales, 'Coef', by = c('Model', 'data.cv')) %>% 
+  as.data.table() %>%
+  dcast(Coef + data.cv ~ Model, value.var = 'emmean')
+
+emmeans(mod_mae_scales, 'Coef', by = c('Model', 'data.fixed')) %>% 
+  as.data.table() %>% 
+  dcast(Coef + data.fixed ~ Model, value.var = 'emmean')
+```
+
+Tables of MAE for scales, grouped.
+```{r}
+dtMAEMVsc[Coef %in% scaleArgs2, .(
+  Value = meanSeText(MAE)), keyby = .(Model, Coef, data.random)] %>%
+  dcast(data.random + Coef ~ Model, value.var = 'Value') %T>% 
+  write.csv(file.path(TABLES_DIR, 'mv_mae_scales.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+Test for different bias of the scale parameters.
+```{r, message = FALSE}
+f = MAE ~ Model * data.numGroups + Model * data.fixed + Model * data.random + Model * data.cv + Model * data.randomSigma + Model * data.sigma
+conds = c('data.numGroups', 'data.fixed', 'data.random', 'data.randomSigma', 'data.cv', 'data.sigma')
+
+mvscmods = list(
+  R1 = lm(f, data = dtCoefSimsMV[Coef == 'random[i=1]']),
+  R2 = lm(f, data = dtCoefSimsMV[Coef == 'random[i=2]']),
+  R3 = lm(f, data = dtCoefSimsMV[Coef == 'random[i=3]']),
+  RS = lm(f, data = dtCoefSimsMV[Coef == 'randomSigma']),
+  Sigma = lm(f, data = dtCoefSimsMV[Coef == 'sigma'])
+)
+
+emmTable(mvscmods, conds)
+pairsTable(mvscmods, conds)
+pairsEffTable(mvscmods, conds)
+```
+
+```{r}
+emm2Table(mvscmods, 'Model', conds)
+```
+
+
+
+### CV
+Table of CV per scenario.
+```{r}
+dtMAEMVcv = dtCoefSimsMV[Coef %in% cvArgs & Model %in% c('MV-GMM', 'RMV-GMM')]
+qMAEMean = quote(.(Mean = meanText(MAE)))
+list(
+  All = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups)] %>%
+    dcast(. + Coef ~ data.numGroups + Model, value.var = 'Mean') %>%
+    setnames('.', 'Setting'),
+  fixed = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups, Setting = data.fixed)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  random = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups, Setting = data.random)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  cv = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups, Setting = data.cv)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  randomSigma = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups, Setting = data.randomSigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  sigma = dtMAEMVcv[, eval(qMAEMean), keyby = .(Model, Coef, data.numGroups, Setting = data.sigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean')
+  ) %>% 
+  rbindlist(idcol = 'Scenario') %T>%
+  write.csv(file.path(TABLES_DIR, 'mv_mae_cv.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+Test for differences in cv bias between groups.
+```{r}
+f = MAE ~ data.fixed + data.random + data.cv + data.randomSigma + data.sigma
+conds = c('data.fixed', 'data.random', 'data.randomSigma', 'data.cv', 'data.sigma')
+
+mvcvmods = list(
+  CV1 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=1]']),
+  CV2 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=2]']),
+  CV3 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=3]'])
+)
+
+emmTable(mvcvmods, conds)
+pairsTable(mvcvmods, conds)
+pairsEffTable(mvcvmods, conds)
+```
+
+
+Test for different bias of the cv parameters.
+```{r, message = FALSE}
+f = MAE ~ Model * data.numGroups + Model * data.fixed + Model * data.random + Model * data.cv + Model * data.randomSigma + Model * data.sigma
+conds = c('data.numGroups', 'data.fixed', 'data.random', 'data.randomSigma', 'data.cv', 'data.sigma')
+
+mvcvmods = list(
+  CV1 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=1]']),
+  CV2 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=2]']),
+  CV3 = lm(f, data = dtCoefSimsMV[Coef == 'cv[k=3]'])
+)
+
+emmTable(mvcvmods, conds)
+pairsTable(mvcvmods, conds)
+pairsEffTable(mvcvmods, conds)
+```
+
+
+## Bias
+```{r}
+dtBiasMV = dtCoefSimsMV[Coef %in% allArgs2]
+dtBiasMV2 = dtCoefSimsMV[Coef %in% allArgs2 & data.numGroups == 2]
+dtBiasMV3 = dtCoefSimsMV[Coef %in% allArgs & data.numGroups == 3]
+
+dtBiasMVsc = dtBiasMV[Coef %in% scaleArgs]
+```
+
+### Fixed effects
+Table of bias for all fixed effects, per dataset.
+```{r}
+dtCoefSimsMV[Coef %in% fixedArgs & is.finite(Bias), .(Mean = meanText(Bias)), 
+  keyby = .(Model, data.numGroups, data.fixed, Coef)] %>%
+  dcast(data.numGroups + data.fixed + Coef ~ Model, value.var = 'Mean') %T>% 
+  write.csv(file.path(TABLES_DIR, 'mv_bias_fixed.csv'), row.names = FALSE)
+```
+
+### Scales
+Overall bias for scales.
+```{r}
+dtBiasMVsc[Coef %in% scaleArgs, .(
+  Value = meanSeText(Bias)), keyby = .(Model, Coef)] %>%
+  dcast(Coef ~ Model, value.var = 'Value')
+```
+
+
+Tables of bias for scales, grouped.
+```{r}
+dtBiasMVsc[Coef %in% scaleArgs, .(
+  Value = meanSeText(Bias)), keyby = .(Model, Coef, data.random)] %>%
+  dcast(data.random + Coef ~ Model, value.var = 'Value') %T>% 
+  write.csv(file.path(TABLES_DIR, 'mv_bias_scales.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+### CV
+Table of CV per scenario.
+```{r}
+dtBiasMVcv = dtCoefSimsMV[Coef %in% cvArgs & Model %in% c('MV-GMM', 'RMV-GMM')]
+qBiasMean = quote(.(Mean = meanText(Bias)))
+list(
+  All = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups)] %>%
+    dcast(. + Coef ~ data.numGroups + Model, value.var = 'Mean') %>%
+    setnames('.', 'Setting'),
+  fixed = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.fixed)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  random = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.random)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  cv = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.cv)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  randomSigma = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.randomSigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  sigma = dtBiasMVcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.sigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean')
+  ) %>% 
+  rbindlist(idcol = 'Scenario') %T>%
+  write.csv(file.path(TABLES_DIR, 'mv_bias_cv.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+K=3 table.
+
+
+# No mean-variance relationship
+```{r}
+qN = quote(data.fixed == 'Partial' & data.cv == 'None')
+
+dtModelsN = dtModels[eval(qN) & AllConverged == TRUE] %>%
+  .[, IsMV := Model %in% c('MV-GMM', 'RMV-GMM')] %>%
+  .[]
+dtCoefSimsN = dtConvCoefSims[eval(qN)]
+dtSimsN = dtAllConvSims[eval(qN)]
+```
+
+
+## ARI
+```{r message=FALSE}
+list(
+  All = dtSimsN[, eval(qCA), keyby=Model] %>% dcast(. ~ Model),
+  K = dtSimsN[, eval(qCA), keyby=.(Model, data.numGroups)] %>% dcast(data.numGroups ~ Model),
+  Random = dtSimsN[, eval(qCA), keyby=.(Model, data.random)] %>% dcast(data.random ~ Model),
+  RandomSigma = dtSimsN[, eval(qCA), keyby=.(Model, data.randomSigma)] %>% dcast(data.randomSigma ~ Model),
+  Sigma = dtSimsN[, eval(qCA), keyby=.(Model, data.sigma)] %>% dcast(data.sigma ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %T>%
+  write.csv(file.path(TABLES_DIR, 'no_ari.csv'), row.names = FALSE)
+```
+
+Test overall effects (over all models).
+```{r}
+mod_ari_main = lm(AdjustedRand ~ data.numGroups + data.random + data.randomSigma + data.sigma, data = dtModelsN)
+
+anova(mod_ari_main)
+
+conds = terms(mod_ari_main) %>% labels()
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_main, cond) %>% 
+    pairs() %>%
+    as.data.table()
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition')
+
+lapply(conds, function(cond) {
+  emmeans(mod_ari_main, cond) %>% 
+    cohens_d() %>%
+    as.data.table()
+  }) %>% 
+  set_names(conds) %>%
+  rbindlist(idcol = 'Condition')
+```
+
+```{r}
+mod_ari_model = lm(AdjustedRand ~ Model * data.numGroups + Model * data.random + Model * data.randomSigma + Model * data.sigma, data = dtModelsN)
+
+anova(mod_ari_model)
+
+emmeans(mod_ari_model, 'Model', by = 'data.random') %>% cohens_d()
+```
+
+## MAE
+```{r}
+dtMAEN2 = dtCoefSimsN[Coef %in% allArgs2 & data.numGroups == 2]
+dtMAEN3 = dtCoefSimsN[Coef %in% allArgs & data.numGroups == 3]
+```
+
+
+### Scales
+```{r}
+dtMAENsc = dtCoefSimsN[Coef %in% c('sigma', 'randomSigma')]
+```
+
+Table of MAE for scales, for all conditions.
+```{r, message = FALSE}
+list(
+  All = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model)] %>% dcast(. + Coef ~ Model),
+  K = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.numGroups)] %>% dcast(data.numGroups + Coef ~ Model),
+  Fixed = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.fixed)] %>% dcast(data.fixed + Coef ~ Model),
+  Random = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.random)] %>% dcast(data.random + Coef ~ Model),
+  CV = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.cv)] %>% dcast(data.cv + Coef ~ Model),
+  RandomSigma = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.randomSigma)] %>% dcast(data.randomSigma + Coef ~ Model),
+  Sigma = dtMAENsc[, eval(qMAE), keyby=.(Coef, Model, data.sigma)] %>% dcast(data.sigma + Coef ~ Model)
+) %>% 
+  rbindlist(idcol = 'Par', use.names = FALSE) %>%
+  setnames('.', 'Setting') %>%
+  setkey(Coef, Par, Setting) %>%
+  .[]
+```
+
+Tables of MAE for scales, by data.random.
+```{r}
+dtMAENsc[Coef %in% scaleArgs2, .(
+  Value = meanSeText(MAE)), keyby = .(Model, Coef, data.random)] %>%
+  dcast(data.random + Coef ~ Model, value.var = 'Value') %T>% 
+  write.csv(file.path(TABLES_DIR, 'no_mae_scales.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+### CV
+
+## Bias
+```{r}
+dtBiasN2 = dtCoefSimsN[Coef %in% allArgs2 & data.numGroups == 2]
+dtBiasN3 = dtCoefSimsN[Coef %in% allArgs & data.numGroups == 3]
+```
+
+### Scales
+Tables of bias for cv and scales, per numGroups.
+```{r}
+table2 = dtBiasN2[Coef %in% scaleArgs2, 
+  .(Value = meanSeText(Bias)), keyby = .(Model, Coef)] %>%
+  dcast(Coef ~ Model, value.var = 'Value')
+table3 = dtBiasN3[Coef %in% scaleArgs, 
+  .(Value = meanSeText(Bias)), keyby = .(Model, Coef)] %>%
+  dcast(Coef ~ Model, value.var = 'Value')
+
+rbind(`2` = table2, `3` = table3, idcol = 'K') %T>%
+  write.csv(file.path(TABLES_DIR, 'no_bias_scales_all.csv'), row.names = FALSE, fileEncoding='UTF8')
+```
+
+### CV
+Bias of cv under the different scenarios.
+```{r}
+dtBiasNcv = dtCoefSimsN[Coef %in% cvArgs & Model %in% c('MV-GMM', 'RMV-GMM')]
+qBiasMean = quote(.(Mean = meanText(Bias)))
+list(
+  All = dtBiasNcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups)] %>%
+    dcast(. + Coef ~ data.numGroups + Model, value.var = 'Mean') %>%
+    setnames('.', 'Setting'),
+  random = dtBiasNcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.random)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  randomSigma = dtBiasNcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.randomSigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean'),
+  sigma = dtBiasNcv[, eval(qBiasMean), keyby = .(Model, Coef, data.numGroups, Setting = data.sigma)] %>%
+    dcast(Setting + Coef ~ data.numGroups + Model, value.var = 'Mean')
+  ) %>% 
+  rbindlist(idcol = 'Scenario') %T>%
+  write.csv(file.path(TABLES_DIR, 'no_bias_cv.csv'), row.names = FALSE, fileEncoding = 'UTF8', na = '')
+```
+
+
+# Session info
+```{r}
+sessionInfo()
+```
+

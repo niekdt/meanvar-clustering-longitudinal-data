@@ -1,0 +1,250 @@
+---
+title: "CSSE COVID19 maps"
+author: "Niek Den Teuling"
+date: "2021-03-17"
+editor_options: 
+  chunk_output_type: inline
+params:
+  minDate: 2020-06-01
+  maxDate: 2020-09-13
+  excludeZeroCounties: TRUE
+  popDensData: '../data/ykzeng/covid-19/data/census-landarea-all.csv'
+  maskData: '../data/nytimes/covid-19-data/mask-use/mask-use-by-county.csv'
+  prevData: '../data/cdc/cdc_90519_DS1.csv'
+---
+
+```{r setup, include=FALSE}
+library(usmap)
+minDate = as.Date(params$minDate)
+maxDate = as.Date(params$maxDate)
+excludeZeroCounties = as.logical(params$excludeZeroCounties)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+```{r}
+covidData = covidWeekData(data.state = 'all', 
+    data.minDate = as.character(minDate), 
+    data.maxDate = as.character(maxDate), 
+    data.excludeZeroCounties = excludeZeroCounties, 
+    data.minNormNew = .5) %>%
+  setnames('FIPS', 'fips') %>%
+  setkey(fips)
+
+# load population density data
+demoData = read.csv(params$popDensData) %>% 
+  setDT() %>%
+  .[fips > 0] %>%
+  setnames('POP060210', 'PopSqM') %>%
+  setnames('AGE775212', 'Seniors') %>%
+  setnames('SEX255212', 'Females') %>%
+  .[, SeniorsProp := Seniors / 100] %>%
+  .[, FemaleProp := Females / 100]
+
+maskData = read.csv(params$maskData) %>%
+  setDT() %>%
+  setnames('COUNTYFP', 'fips') %>%
+  .[, MaskUseProb := ALWAYS + .8 * FREQUENTLY + .5 * SOMETIMES + .2 * RARELY] %>% 
+  .[, NoMaskUseProb := 1 - MaskUseProb] %>% 
+  setnames('NEVER', 'MaskUse.Never') %>%
+  setnames('RARELY', 'MaskUse.Rarely') %>%
+  setnames('SOMETIMES', 'MaskUse.Sometimes') %>%
+  setnames('FREQUENTLY', 'MaskUse.Frequently') %>%
+  setnames('ALWAYS', 'MaskUse.Always')
+
+prevData = read.csv(params$prevData, sep = ';') %>%
+  setDT() %>%
+  setnames('FIPS', 'fips')
+
+# data = merge(covidData, demoData[, .(fips, PopSqM)], by = 'fips') 
+```
+
+# Maps
+## Population
+```{r}
+plot_usmap(data = covidData, 
+    values = 'Population', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Population', trans = 'log10') +
+  labs(title = 'County population')
+```
+
+## Population density
+```{r}
+plot_usmap(data = demoData, 
+    values = 'PopSqM', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Population', trans = 'log10') +
+  labs(title = 'Population density per county (inhabitants / square mile)')
+```
+
+## Females
+```{r}
+plot_usmap(data = demoData, 
+    values = 'FemaleProp', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Females') +
+  labs(title = 'County population')
+```
+
+## Seniors
+```{r}
+plot_usmap(data = demoData, 
+    values = 'SeniorsProp', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Females') +
+  labs(title = 'Seniors')
+```
+
+## Mask use
+```{r}
+plot_usmap(data = maskData, 
+    values = 'MaskUseProb', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Mask use', labels = percent) +
+  labs(title = 'Mask usage probability')
+```
+
+```{r}
+plot_usmap(data = maskData, 
+    values = 'MaskUse.Always', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Mask use', labels = percent, lim = c(0, 1)) +
+  labs(title = 'Mask usage - Always')
+```
+
+```{r}
+plot_usmap(data = maskData, 
+    values = 'MaskUse.Never', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Mask use', labels = percent) +
+  expand_limits(fill = 0) +
+  labs(title = 'Mask usage - Never')
+```
+
+## Any condition
+```{r}
+plot_usmap(data = prevData, 
+    values = 'anycondition_prevalence', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Any condition') +
+  labs(title = 'Any condition')
+```
+
+## Obesity
+```{r}
+plot_usmap(data = prevData, 
+    values = 'Obesity_prevalence', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Obesity') +
+  labs(title = 'Obesity')
+```
+
+## Heart disease
+```{r}
+plot_usmap(data = prevData, 
+    values = 'Heart.disease_prevalence', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Heart disease') +
+  labs(title = 'Heart disease')
+```
+
+## COPD
+```{r}
+plot_usmap(data = prevData, 
+    values = 'COPD_prevalence', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'COPD') +
+  labs(title = 'COPD')
+```
+
+## Diabetes
+```{r}
+plot_usmap(data = prevData, 
+    values = 'diabetes_prevalence', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Diabetes') +
+  labs(title = 'Diabetes')
+```
+
+## Confirmed COVID cases
+```{r}
+plot_usmap(data = covidData[, .(cases = max(Confirmed) - min(Confirmed)), keyby=.(fips)], 
+    values = 'cases', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'Confirmed', trans = 'log10') +
+  labs(title = 'COVID cases during time period')
+```
+
+## Normalized confirmed cases
+```{r}
+plot_usmap(data = covidData[, .(cases = (max(Confirmed) - min(Confirmed)) / Population), keyby=.(fips)], 
+    values = 'cases', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'NormConfirmed', trans = 'log10') +
+  labs(title = 'Normalized COVID cases during time period')
+```
+
+## Non-zero weekly cases
+```{r}
+plot_usmap(data = covidData[, .(cases = mean(NormNewConfirmed > 0)), keyby=.(fips)], 
+    values = 'cases', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'mean(NewNormConfirmed > 0)') +
+  labs(title = 'Proportion of non-zero weekly COVID cases')
+```
+
+## Average weekly cases
+```{r}
+plot_usmap(data = covidData[, .(cases = mean(NormNewConfirmed)), keyby=.(fips)], 
+    values = 'cases', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'mean(NewNormConfirmed)', trans = 'log10') +
+  labs(title = 'Average weekly normalized number of COVID cases')
+```
+
+## ZA Median weekly cases
+```{r}
+plot_usmap(data = covidData[, .(cases = median(NormNewConfirmed[NormNewConfirmed > 0], na.rm=TRUE)), keyby=.(fips)], 
+    values = 'cases', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'mean(NewNormConfirmed)', trans = 'log10') +
+  labs(title = 'Non-zero median weekly normalized number of COVID cases')
+```
+
+## Diff in cases over time period
+```{r}
+plot_usmap(data = covidData[, {mod = lm(I(log10(NormNewConfirmed + .5)) ~ Time, data = .SD); coef(mod)[2]}, keyby=.(fips)], 
+    values = 'V1', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'max(NewNormConfirmed)') +
+  labs(title = 'Slope of new COVID cases')
+```
+
+## Percentage change in cases
+```{r}
+plot_usmap(data = covidData[, {mod = lm(I(log10(NormNewConfirmed + .5)) ~ Time, data = .SD); coef(mod)[2]}, keyby=.(fips)], 
+    values = 'V1', 
+    regions = 'counties', 
+    size = .1) +
+  scale_fill_viridis_c(option = 'inferno', name = 'max(NewNormConfirmed)') +
+  labs(title = 'Slope of new COVID cases')
+```

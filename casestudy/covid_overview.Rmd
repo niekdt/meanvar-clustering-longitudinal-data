@@ -1,0 +1,223 @@
+---
+title: "CSSE COVID19 overview"
+author: "Niek Den Teuling"
+date: "2020-10-23"
+editor_options: 
+  chunk_output_type: inline
+params:
+  minDate: 2020-03-01
+  maxDate: 2022-01-01
+---
+
+```{r setup, include=FALSE}
+minDate = as.Date(params$minDate)
+maxDate = as.Date(params$maxDate)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+```{r}
+alldata = load_csse_covid19_data()
+
+data = alldata %>%
+  .[Date %between% c(minDate, maxDate)] %>%
+  .[Population > 0]
+```
+
+* `r uniqueN(alldata$State)` states.
+* `r uniqueN(alldata$Combined_Key) %>% comma()` counties.
+* `r uniqueN(alldata$Date)` observation days (`r min(alldata$Date)` to `r max(alldata$Date)`).
+
+```{r warning=FALSE}
+countyTable = alldata[, .(
+  ObservationDays = uniqueN(Date),
+  InfectionStart = first(Date[Confirmed > 0]),
+  Population = max(Population*1),
+  Confirmed = max(Confirmed)
+  ), 
+  keyby = .(State, County)]
+
+stateTable = countyTable[, .(
+  Counties = .N,
+  ObservationDays = max(ObservationDays),
+  InfectionStart = min(InfectionStart, na.rm=TRUE),
+  Population = sum(Population),
+  Confirmed = sum(Confirmed)
+), keyby = State]
+```
+
+# Nation-wide
+```{r}
+nationData = data[, .(
+  Confirmed = sum(Confirmed)
+  ), 
+  keyby=Date] %>%
+  .[, Confirmed7 := movmeanc(Confirmed, 7)] %>%
+  .[, NewConfirmed := c(0, diff(Confirmed))] %>%
+  .[, NewConfirmedWeekly := movsumr(NewConfirmed, 7) / 7] %>% # identical to 3-day shifted diff(Confirmed7)
+  .[, NewConfirmed7 := c(0, diff(Confirmed7))]
+```
+
+## Cumulative cases
+```{r}
+ggplot(nationData, aes(x = Date, y = Confirmed)) +
+  scale_y_continuous(breaks = pretty_breaks(10), labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line(size = 1) +
+  geom_line(aes(y = Confirmed7), color = 'red') +
+  labs(title = 'Cumulative cases nation-wide')
+```
+
+```{r}
+ggplot(nationData, aes(x = Date, y = Confirmed)) +
+  scale_y_log10(labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line(size = 1) +
+  geom_line(aes(y = Confirmed7), color = 'red') +
+  labs(title = 'Cumulative cases nation-wide')
+```
+
+## New cases
+```{r}
+ggplot(nationData, aes(x = Date, y = NewConfirmed)) +
+  scale_y_continuous(breaks = pretty_breaks(10), labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line(size = 1) +
+  geom_line(aes(y = NewConfirmed7), color='red') +
+  labs(title = 'New cases nation-wide')
+```
+
+```{r}
+alldata[, .(NormNewConfirmed = mean(NormNewConfirmed, na.rm=TRUE)), by=DayOfWeek] %>%
+  ggplot(aes(x = DayOfWeek, y = NormNewConfirmed)) +
+  geom_bar(stat = 'identity')
+```
+
+```{r}
+alldata[, .(NewCaseReports = sum(NewConfirmed > 0, na.rm=TRUE)), by=DayOfWeek] %>%
+  ggplot(aes(x = DayOfWeek, y = NewCaseReports)) +
+  scale_y_continuous(labels = comma) +
+  geom_bar(stat = 'identity')
+```
+
+
+# State-level
+`r stateTable[order(-Counties)] %>% .[, Population := comma(Population)] %>% .[, Confirmed := comma(Confirmed)] %>% DT::datatable()`
+
+```{r}
+stateData = data %>%
+  .[, .(Confirmed = sum(Confirmed), Population = sum(Population)), keyby=.(State, Date)] %>%
+  .[, Confirmed7 := movmeanc(Confirmed, 7), by=State] %>%
+  .[, NewConfirmed := c(0, diff(Confirmed)), by=State] %>%
+  .[, NewConfirmed7 := c(0, diff(Confirmed7)), by=State]
+```
+
+## Cumulative cases
+```{r}
+ggplot(stateData, aes(x = Date, y = Confirmed, group = State)) +
+  scale_y_continuous(breaks = pretty_breaks(10), labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line() +
+  labs(title = 'Cumulative cases state-wide')
+```
+## New cases
+```{r}
+ggplot(stateData, aes(x = Date, y = NewConfirmed, group = State)) +
+  scale_y_continuous(breaks = pretty_breaks(10), labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line(size = 1) +
+  geom_line(aes(y = NewConfirmed7), color='red', alpha = .5) +
+  labs(title = 'New cases state-wide')
+```
+
+```{r}
+ggplot(stateData, aes(x = Date, y = NewConfirmed / Population * 1e5, group = State)) +
+  scale_y_continuous(breaks = pretty_breaks(10), labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  coord_cartesian(ylim=c(0, 100)) +
+  geom_line(size = 1) +
+  geom_line(aes(y = NewConfirmed7 / Population * 1e5), color='red', alpha=.5) +
+  labs(title = 'Normalized new cases state-wide', subtitle = 'Trimmed to 100 cases / 1e5')
+```
+
+```{r warning=FALSE}
+ggplot(stateData, aes(x = Date, y = NewConfirmed / Population * 1e5 + .01, group = State)) +
+  scale_y_log10(labels=comma) +
+  scale_x_date(breaks = pretty_breaks(10)) +
+  geom_line() +
+  geom_line(aes(y = NewConfirmed7 / Population * 1e5 + .01), color='red', alpha=.5) +
+  labs(title = 'Normalized new cases state-wide')
+```
+
+# County-level
+```{r}
+countyData = data %>%
+  .[, Confirmed7 := movmeanc(Confirmed, 7), by=.(State, County)] %>%
+  .[, NewConfirmed := c(0, diff(Confirmed)), by=.(State, County)] %>%
+  .[, NewConfirmed7 := c(0, diff(Confirmed7)), by=.(State, County)]
+```
+
+## Cumulative cases {.tabset .tabset-pills}
+```{r warning=FALSE, results='asis'}
+states = unique(data$State) %>% as.character()
+for (state in states) {
+    cat('###', state, '<br>', '\n')
+    
+    plot.new()
+    print(ggplot(countyData[State == state], aes(x = Date, y = Confirmed + .1, group = County)) +
+        scale_y_log10() +
+        scale_x_date(breaks = pretty_breaks(10)) +
+        geom_line() +
+        geom_line(aes(y = Confirmed7 + .1), color = 'red', alpha = .5) +
+        labs(title='Confirmed cases', subtitle = state))
+    
+    dev.off()
+    plot.new()
+    dev.off()
+}
+```
+## New cases {.tabset .tabset-pills}
+```{r warning=FALSE, results='asis'}
+states = unique(data$State) %>% as.character()
+for (state in states) {
+    cat('###', state, '<br>', '\n')
+    
+    plot.new()
+    print(ggplot(countyData[State == state], aes(x = Date, y = NewConfirmed + .1, group = County)) +
+        scale_y_log10() +
+        scale_x_date(breaks = pretty_breaks(10)) +
+        geom_line() +
+        geom_line(aes(y = NewConfirmed7 + .1), color = 'red', alpha = .5) +
+        labs(title='New confirmed cases', subtitle = state))
+    
+    dev.off()
+    plot.new()
+    dev.off()
+}
+```
+
+## Normalized new cases {.tabset .tabset-pills}
+```{r warning=FALSE, results='asis'}
+states = unique(data$State) %>% as.character()
+for (state in states) {
+    cat('###', state, '<br>', '\n')
+    
+    plot.new()
+    print(ggplot(countyData[State == state], aes(x = Date, y = NewConfirmed / Population * 1e5 + .1, group = County)) +
+        scale_y_log10() +
+        scale_x_date(breaks = pretty_breaks(10)) +
+        geom_line() +
+        geom_line(aes(y = NewConfirmed7 / Population * 1e5 + .1), color = 'red', alpha = .5) +
+        labs(title='New confirmed cases', subtitle = state))
+    
+    dev.off()
+    plot.new()
+    dev.off()
+}
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
+

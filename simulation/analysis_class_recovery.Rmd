@@ -1,0 +1,327 @@
+---
+title: "Analysis of class enumeration simulation study"
+author: "Niek Den Teuling"
+date: "2022-02-08"
+params:
+  experiment: class_gmmrmv_final2
+  simFields: model, data.numGroups, data.fixed, data.random, data.randomSigma, data.cv, data.seed
+  clusterFields: nClusters, AlphaCor, ConvProp, AllConverged, thetaMin
+  metricFields: LogLik, mWAIC, p_waic1, p_waic2, BIC
+  metric: mWAIC
+output:
+  html_document: 
+    toc: yes
+    highlight: tango
+    number_sections: yes
+---
+
+# Preparation
+```{r setup, results='hide'}
+suppressPackageStartupMessages({
+  library(effectsize)
+  library(emmeans)
+  library(multcomp)
+})
+
+allSimFields = stringr::str_split(params$simFields, ',\\s*')[[1]]
+allClusterFields = stringr::str_split(params$clusterFields, ',\\s*')[[1]]
+allMetricFields = stringr::str_split(params$metricFields, ',\\s*')[[1]]
+datasimConds = setdiff(allSimFields, 'seed')
+metric = params$metric
+```
+
+```{r, results='hide'}
+expFile = file.path(RESULTS_DIR, paste0(params$experiment, '.rds'))
+dtAllModels = readRDS(expFile) %>%
+  as.data.table() %>%
+  .[, AllConverged := is.finite(ConvProp) & ConvProp == 1] %>%
+  .[]
+assert_that(
+  noNA(dtAllModels$ConvProp), 
+  msg = 'One or more model evaluations have NaN ConvProp value, indicating a parameter processing issue'
+)
+
+simFields = intersect(allSimFields, names(dtAllModels))
+clusterFields = intersect(allClusterFields, names(dtAllModels))
+metricFields = intersect(allMetricFields, names(dtAllModels))
+
+assert_that(hasName(dtAllModels, metric))
+
+dtModels = dtAllModels %>%
+  subset(select = unique(c(simFields, clusterFields, metricFields))) %>%
+  .[, i := .GRP, keyby = simFields] %>%
+  .[, data.i := .GRP, keyby = datasimConds]
+nClusterOptions = unique(dtModels$nClusters)
+
+message(uniqueN(dtModels$i), ' unique data scenarios')
+```
+
+Determine valid models.
+```{r}
+dtValidModels = dtModels[abs(AlphaCor) < .9]
+message(
+  sprintf(
+    'Dropped %d/%d invalid models (%g%%)', 
+    nrow(dtModels) - nrow(dtValidModels),
+    nrow(dtModels),
+    (nrow(dtModels) - nrow(dtValidModels)) / nrow(dtValidModels) * 100
+  )
+)
+
+validSims = dtValidModels[, all(nClusterOptions %in% nClusters), keyby = i] %>%
+  .[V1 == TRUE, .(i)]
+
+dtValidSimModels = dtValidModels[validSims, on = 'i']
+setkeyv(dtValidSimModels, c(datasimConds, 'AllConverged', metric))
+assert_that(nrow(dtValidSimModels) > 0)
+
+message('Valid simulation scenarios: ', nrow(validSims) / uniqueN(dtValidModels$i) * 100, '%')
+```
+
+# Results for all models
+```{r}
+# select the preferred model per nClusters setting in case of multiple runs through seed argument.
+dtValidSimModelsBest = dtValidSimModels[
+  order(-AllConverged, mWAIC), 
+  first(.SD), 
+  keyby = .(i, nClusters)
+]
+
+assert_that(
+  dtValidSimModelsBest[, 
+    .N == length(nClusterOptions) && setequal(nClusters, nClusterOptions), 
+    keyby = .(i)
+  ][, all(V1)],
+  msg = 'Implementation error: some simulation conditions have more than 1 model per nClusters setting'
+)
+
+dtValidWide = dcast(
+  dtValidSimModelsBest, 
+  model + data.fixed + data.random + data.randomSigma + data.cv + data.seed ~ paste0('K', nClusters),
+  value.var = metric
+)
+```
+
+## Convergence rate
+Compute complete convergence per model.
+```{r}
+dtValidSimModels[, .(
+  Converged = mean(AllConverged, na.rm = TRUE)
+), keyby = .(data.fixed, data.cv, data.randomSigma, model, nClusters)]
+```
+
+## mLogLik
+```{r}
+ggplot(dtValidSimModelsBest, aes(x = nClusters, y = LogLik, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + data.cv + data.randomSigma + model)
+```
+
+## mWAIC
+```{r}
+ggplot(dtValidSimModelsBest, aes(x = nClusters, y = mWAIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + data.cv + data.randomSigma + model, scales = 'free_y')
+```
+
+## p_waic
+```{r}
+ggplot(dtValidSimModelsBest, aes(x = nClusters, y = p_waic1, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model, scales = 'free_y')
+
+ggplot(dtValidSimModelsBest, aes(x = nClusters, y = p_waic2, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model, scales = 'free_y')
+```
+
+## BIC
+```{r}
+ggplot(dtValidSimModels, aes(x = nClusters, y = BIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model, scales = 'free_y')
+```
+
+## Solo-run class recovery
+```{r}
+dtValidWide[, 
+  Kmin := apply(as.matrix(.SD), 1, which.min), 
+  .SDcols = paste0('K', 1:3), 
+  keyby = model
+]
+
+dtValidWide[, .(
+  .N, 
+  MinusProp = mean(Kmin == 1), 
+  CorrectProp = mean(Kmin == 2), 
+  PlusProp = mean(Kmin == 3)), 
+  keyby = .(data.fixed, data.cv, data.randomSigma, model)
+]
+```
+
+## Dataset-averaged class recovery
+```{r}
+dtMeanValidSims = dtValidSimModels[, .(
+  Metric = mean(mWAIC, na.rm = TRUE), 
+  Models = .N
+), keyby = c('nClusters', datasimConds)]
+```
+
+```{r}
+dtMeanValidWide = dcast(
+  dtMeanValidSims, 
+  model + data.fixed + data.randomSigma + data.cv + data.seed ~ paste0('K', nClusters), 
+  value.var = c('Metric', 'Models')
+)
+
+msg = validate_that(
+  noNA(dtMeanValidWide$Metric_K1),
+  noNA(dtMeanValidWide$Metric_K2),
+  noNA(dtMeanValidWide$Metric_K3)
+)
+if (!isTRUE(msg)) {
+  warning(msg)
+}
+
+dtMeanValidWide[, Kmin := apply(as.matrix(.SD), 1, which.min), .SDcols = paste0('Metric_K', 1:3), keyby = model]
+
+dtMeanValidWide[, .(Datasets = .N, MinusProp = mean(Kmin == 1), CorrectProp = mean(Kmin == 2), PlusProp = mean(Kmin == 3)), keyby = .(data.fixed, data.cv, data.randomSigma, model)]
+```
+
+# Results for fully converged models
+```{r}
+convSims = dtValidSimModels[
+  AllConverged == TRUE, 
+  all(nClusterOptions %in% nClusters), 
+  keyby = i
+] %>% 
+  .[V1 == TRUE, .(i)]
+
+message('Complete scenarios with converged models: ', nrow(convSims) / uniqueN(dtSimModels$i) * 100, '%')
+
+dtConvSimModels = dtValidSimModels[AllConverged == TRUE][convSims, on = 'i']
+assert_that(
+  nrow(dtConvSimModels) > 0,
+  all(dtConvSimModels$AllConverged)
+)
+
+dtConvSimModelsBest = dtConvSimModels[
+  order(mWAIC), 
+  first(.SD), 
+  keyby = .(i, nClusters)
+]
+
+dtConvWide = dcast(
+  dtConvSimModelsBest, 
+  model + data.fixed + data.random + data.randomSigma + data.cv + data.seed ~ paste0('K', nClusters),
+  value.var = metric
+)
+```
+
+## mLogLik
+```{r}
+ggplot(dtConvSimModelsBest, aes(x = nClusters, y = LogLik, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + data.randomSigma + model)
+```
+
+## mWAIC
+```{r}
+ggplot(dtConvSimModelsBest, aes(x = nClusters, y = mWAIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + data.cv + data.randomSigma + model, scales = 'free_y')
+```
+
+## p_waic
+```{r}
+ggplot(dtConvSimModelsBest, aes(x = nClusters, y = p_waic1, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model + data.cv + data.randomSigma, scales = 'free_y')
+
+ggplot(dtConvSimModelsBest, aes(x = nClusters, y = p_waic2, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model + data.cv + data.randomSigma, scales = 'free_y')
+```
+
+## BIC
+```{r}
+ggplot(dtConvSimModelsBest, aes(x = nClusters, y = BIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model + data.cv + data.randomSigma, scales = 'free_y')
+```
+
+## Solo-run class recovery
+```{r}
+dtConvWide[, 
+  Kmin := apply(as.matrix(.SD), 1, which.min), 
+  .SDcols = paste0('K', 1:3), 
+  keyby = model
+]
+
+dtConvWide[, .(
+  .N, 
+  MinusProp = mean(Kmin == 1), 
+  CorrectProp = mean(Kmin == 2), 
+  PlusProp = mean(Kmin == 3)), 
+  keyby = .(data.fixed, data.cv, data.randomSigma, model)
+]
+```
+
+## Dataset-averaged class recovery
+```{r}
+dtMeanConvSims = dtConvSimModels[, .(
+  Metric = min(mWAIC, na.rm = TRUE), 
+  Models = .N
+), keyby = c('nClusters', datasimConds)]
+```
+
+```{r}
+dtMeanConvWide = dcast(
+  dtMeanConvSims, 
+  model + data.fixed + data.randomSigma + data.cv + data.seed ~ paste0('K', nClusters),
+  value.var = c('Metric', 'Models')
+)
+
+msg = validate_that(
+  noNA(dtMeanConvWide$Metric_K1),
+  noNA(dtMeanConvWide$Metric_K2),
+  noNA(dtMeanConvWide$Metric_K3)
+)
+if (!isTRUE(msg)) {
+  warning(msg)
+}
+
+dtMeanConvWide[, Kmin := apply(as.matrix(.SD), 1, which.min), .SDcols = paste0('Metric_K', 1:3), keyby = model]
+
+dtMeanConvWide[, .(Datasets = .N, MinusProp = mean(Kmin == 1), CorrectProp = mean(Kmin == 2), PlusProp = mean(Kmin == 3)), keyby = .(data.fixed, data.cv, data.randomSigma, model)]
+```
+
+# Extra results
+## mWAIC per dataset
+```{r}
+ggplot(dtConvSimModels[data.fixed == 'PartialLinear' & AlphaCor < .9], aes(x = nClusters, y = mWAIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.seed) +
+  labs(title = 'PartialLinear')
+
+ggplot(dtConvSimModels[data.fixed == 'EqualLinear'], aes(x = nClusters, y = mWAIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.seed) +
+  labs(title = 'EqualLinear')
+```
+
+## Shape
+```{r}
+ggplot(dtConvSimModels[, .(nClusters = nClusters, mWAIC = mWAIC - mean(mWAIC)), keyby=.(data.fixed, model, i)], aes(x = nClusters, y = mWAIC, group = i)) +
+  geom_line(size=.1) +
+  facet_wrap(~data.fixed + model)
+```
+
+## Averaged mWAIC per dataset
+```{r}
+ggplot(dtMeanConvSims, aes(x = nClusters, y = Metric, group = data.seed)) + geom_line() +
+  facet_wrap(~ data.fixed + data.randomSigma + data.cv)
+```
+
+
+

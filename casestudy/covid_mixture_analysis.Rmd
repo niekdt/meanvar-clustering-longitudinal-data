@@ -1,0 +1,583 @@
+---
+title: "Analysis of case study results"
+author: "Niek Den Teuling"
+date: "`r format(Sys.Date())`"
+params:
+  Rhat: 1.1
+  ConvProp: .8
+  BW: FALSE # gray-scale figures?
+  Experiment: logcovid0-final
+  MaskData: '../data/nytimes/covid-19-data/mask-use/mask-use-by-county.csv'
+  PrevalenceData: '../data/cdc/cdc_90519_DS1.csv'
+  DensityData: '../data/ykzeng/covid-19/data/census-landarea-all.csv'
+output:
+  html_document: 
+    toc: yes
+    highlight: tango
+    number_sections: yes
+---
+
+```{r setup}
+RHAT_LIM = as.numeric(params$Rhat)
+CONVPROP_MIN = as.numeric(params$ConvProp)
+BW = as.logical(params$BW)
+```
+
+```{r, results='hide'}
+suppressPackageStartupMessages({
+  library(usmap)
+  library(matrixStats)
+  library(emmeans)
+  require(DescTools)
+})
+```
+
+# Data processing
+```{r warning=FALSE, results='hide'}
+sim_init()
+
+dtAllModels = processCaseStudy(
+  params$Experiment, 
+  lcMethod != 'lcMethodStanGBTM' & use_sdzs == FALSE,
+  keepModels = TRUE
+) %>%
+  .[, Index := 1:.N] %>%
+  .[, Model := factor(model, 
+    levels = c('gbtm', 'gmm_full_diag', 'gmm-mv_full_diag', 'gmm-rmv_full_diag'), 
+    labels = c('GBTM', 'GMM', 'MV-GMM', 'RMV-GMM'))] %>%
+  .[]
+
+# saveRDS(dtAllModels, file.path(RESULTS_DIR, 'caseTableFinal.rds'))
+# dtAllModels = readRDS(file.path(RESULTS_DIR, 'caseTableFinal.rds'))
+allModels = attr(dtAllModels, 'models')
+
+table(dtAllModels$Model)
+```
+
+Select models for settings
+```{r}
+dtModels = dtAllModels[
+  data.state == 'all' &
+  (Model == 'GMM' | (Model != 'GMM' & use_sigmas == FALSE)) &
+  use_sdzs == FALSE &
+  nClusters <= 4
+] %>%
+  .[, 
+    SpecModel := interaction(Model, use_sigmas, drop = TRUE) %>%
+      factor(
+        levels = c('GMM.FALSE', 'GMM.TRUE', 'MV-GMM.FALSE', 'RMV-GMM.FALSE'), 
+        labels = c('GMM (shared var)', 'GMM', 'MV-GMM', 'RMV-GMM')
+      )
+  ]
+rhatCols = grep('^Rhat\\.', names(dtModels), value = TRUE)
+
+dtModels[, .(N = .N, CN = sum(ConvProp > CONVPROP_MIN)), keyby = .(SpecModel, nClusters)]
+```
+
+# Class enumeration
+mWAIC
+```{r}
+ggplot(dtModels[ConvProp > CONVPROP_MIN, .(
+  mWAIC=median(mWAIC, na.rm = TRUE), 
+  mWAICmin = quantile(mWAIC, 0, na.rm=TRUE), 
+  mWAICmax = quantile(mWAIC, .75, na.rm=TRUE)), 
+  by=.(nClusters, SpecModel, Model)], 
+  aes(x = nClusters, y = mWAIC, ymin = mWAICmin, ymax = mWAICmax, shape = SpecModel, color = Model)) +
+    geom_errorbar(width=.1) +  
+    geom_line(size=.5) +
+    geom_point(color='white', size=3) +
+    geom_point(size=2) + 
+    scale_x_continuous(breaks = 1:10) +
+    scale_y_continuous(labels = comma) +
+  guides(color = guide_legend(override.aes = list(linetype = 0))) +
+    theme(panel.grid.minor.x = element_blank()) +
+    labs(x = 'Number of classes', y = 'mWAIC')
+```
+
+```{r}
+ggplot(
+  dtModels[
+    ConvProp > CONVPROP_MIN, 
+    .(mWAIC=median(mWAIC, na.rm = TRUE)), 
+    by=.(nClusters, SpecModel)
+  ], 
+  aes(x = nClusters, y = mWAIC, shape = SpecModel, color = SpecModel)
+) +
+    geom_line(size=.5) +
+    geom_point(color='white', size=2.2) +
+    geom_point(size=2) + 
+    scale_x_continuous(breaks = 1:10) +
+    scale_y_continuous(labels = comma) +
+    scale_color_manual(name = 'Model', values = c('gray60', 'gray60', 'gray30', 'black')) +
+    guides(
+      color = guide_legend(override.aes = list(linetype = 0)),
+      shape = guide_legend(title = 'Model')
+    ) +
+    theme(panel.grid.minor.x = element_blank()) +
+    labs(x = 'Number of classes', y = 'WAIC')
+ggsave(filename=file.path(FIG_DIR, 'mWAIC.pdf'), width=8, height=5, units='cm')
+```
+
+
+
+```{r}
+ggplot(dtModels[ConvProp >= CONVPROP_MIN, .(
+  mWAIC=median(mWAIC, na.rm = TRUE), 
+  mWAICmin = quantile(mWAIC, 0, na.rm=TRUE), 
+  mWAICmax = quantile(mWAIC, .8, na.rm=TRUE)), 
+  by=.(nClusters, SpecModel)], 
+  aes(x = nClusters, y = mWAIC, ymin = mWAICmin, ymax = mWAICmax, 
+    shape = SpecModel, color = SpecModel)) +
+    geom_errorbar(width=.1) +  
+    geom_line(size=.5) +
+    geom_point(color='white', size=3) +
+    geom_point(size=2) + 
+    scale_color_manual(values = c('gray60', 'gray60', 'gray30', 'black')) +
+    scale_x_continuous(breaks = 1:10) +
+    scale_y_continuous(labels = comma) +
+  guides(color = guide_legend(override.aes = list(linetype = 0))) +
+    theme(panel.grid.minor.x = element_blank()) +
+    labs(x = 'Number of classes', y = 'WAIC')
+ggsave(filename=file.path(FIG_DIR, 'mWAIC_range.pdf'), width=8, height=6, units='cm')
+```
+
+
+# Model selection
+Compare models for a specific method and number of classes.
+```{r}
+dtBestModels = dtModels[nClusters == 4 & Model == 'MV-GMM']
+
+dtBestModels[
+  ConvProp > CONVPROP_MIN, 
+  .(seed, Index, mWAIC, ConvProp, warmup, samples, adapt_delta)
+] %>%
+  .[order(mWAIC)]
+```
+
+# Preferred model
+```{r}
+bestIdx = dtBestModels[seed == 7, Index]
+bestModel = allModels[[bestIdx]]
+
+data = model.data(bestModel) %>%
+  as.data.table() %>%
+  .[, Cluster := trajectoryAssignments(bestModel)[latrend:::make.idRowIndices(bestModel, .SD)]] %>%
+  .[, fips := FIPS] %>%
+  .[]
+
+dtDatetime = data.table(
+  Time = unique(data$Time), 
+  Date = seq(min(data$LastDate), max(data$LastDate), length.out = uniqueN(data$Time))
+)
+
+dtTraj = clusterTrajectories(bestModel) %>%
+  as.data.table() %>%
+  .[dtDatetime, on = 'Time'] %>%
+  setkey(Cluster, Time)
+
+dtSigmaTraj = clusterTrajectories(bestModel, what = 'sigma', transform = exp) %>%
+  as.data.table() %>%
+  setkey(Cluster, Time)
+dtTraj$Sigma = dtSigmaTraj$LogNormNewConfirmed
+
+clusOrder = dtTraj[, last(LogNormNewConfirmed), keyby=Cluster][, order(-V1)]
+# clusOrder = seq_len(nClusters(bestModel))
+clusNames = NA
+clusNames[clusOrder] = LETTERS[seq_len(nClusters(bestModel))]
+
+# map for converting the original class-specific parameters to the proper index of k
+clusMap = match(seq_len(nClusters(bestModel)), clusOrder) %>% 
+  set_names(paste('Class', seq_len(nClusters(bestModel))))
+
+clusNameMap = clusNames %>%
+  set_names(paste('Class', seq_len(nClusters(bestModel))))
+
+dtTraj[, Class := factor(Cluster, 
+  levels = clusterNames(bestModel)[clusOrder], 
+  labels = sprintf('%s (%s)', clusNames[clusOrder],
+    pct(clusterProportions(bestModel)[clusOrder], 2)))]
+
+colors = switch(as.character(nClusters(bestModel)),
+  `1` = 'black',
+  `2` = viridis_pal(begin = .05, end = .85, direction = -1, option = 'viridis')(2),
+  `3` = viridis_pal(begin = .05, end = .85, direction = -1, option = 'viridis')(3),
+  # `4` = viridis_pal(begin = 0, end = .85, direction = -1, option = 'viridis')(4 + 3)[c(1, 3, 6, 7)]
+  `4` = viridis_pal(begin = 0, end = .85, direction = -1, option = 'viridis')(4 + 1)[c(1, 2, 4, 5)]
+  # `4` = viridis_pal(begin = 0, end = .85, direction = -1, option = 'viridis')(4)
+)
+
+if (isTRUE(BW)) {
+  colors = DescTools::ColToGray(colors)
+}
+
+mapColors = switch(as.character(nClusters(bestModel)),
+  `1` = 'gray40',
+  `2` = colors,
+  `3` = colors,
+  `4` = colors
+)
+
+metric(bestModel, 'relativeEntropy')
+```
+
+## Convergence
+Rhats
+```{r message=FALSE, warning=FALSE}
+lapply(c('theta', 'intercept_mu', 'beta_mu', 'sdz0_mu', 'sdz_mu', 'cv', 'sigma'), 
+  function(p) Rhat(bestModel, p)) %>% 
+  unlist()
+```
+
+
+## Group trajectory plots
+Group trajectories, log only
+```{r}
+ggplot(dtTraj, aes(x = Date, group = Class, color = Class, shape = Class,
+  y = exp(LogNormNewConfirmed), 
+  ymin = exp(LogNormNewConfirmed - Sigma), 
+  ymax = exp(LogNormNewConfirmed + Sigma))) +
+  scale_x_date(
+    breaks = unique(dtTraj$Date)[seq(1, uniqueN(dtTraj$Date), by = 2)],
+    minor_breaks = unique(dtTraj$Date),
+    labels = date_format('%b-%d')
+  ) +
+  scale_y_log10(
+    breaks = c(.1, 1, 10, 100, 1000), 
+    minor_breaks = seq(2, 9) * 10^rep(-6:6, each = 8),
+    sec.axis = sec_axis(~ log(.), breaks = seq(-4, 6, by = 2), name = 'log')
+  ) +
+  coord_cartesian(ylim = exp(c(-1, 6))) +
+  scale_color_manual(name = 'Class', values = colors, na.translate = FALSE) +
+  geom_ribbon(fill = NA, linetype = 2) +
+  geom_line() +
+  geom_point(size = .9) +
+  guides(color = FALSE, shape = FALSE) +
+  labs(y = 'Weekly new confirmed\ncases / 100,000 inhabitants', title = NULL) +
+  theme(axis.text.x=element_text(angle=40, hjust = 1, vjust = 1)) +
+  facet_wrap(~ Class)
+ggsave(filename=file.path(FIG_DIR, 'logtrends-interval.pdf'), width=8, height=7, units='cm')
+```
+
+Group trajectories, log scale
+```{r}
+ggplot(dtTraj, aes(x = Date, y = exp(LogNormNewConfirmed), 
+  group = Class, 
+  shape = Class, 
+  color = Class)) +
+  scale_x_date(
+    breaks = unique(dtTraj$Date)[seq(1, uniqueN(dtTraj$Date), by = 2)],
+    minor_breaks = unique(dtTraj$Date),
+    labels = date_format('%b-%d')
+  ) +
+  scale_y_log10(
+    breaks = c(.1, .2, .5, 1, 2, 5, 10, 20, 50, 100, 200, 500), 
+    minor_breaks = 1:9 * 10^rep(-6:6, each = 9),
+    sec.axis = sec_axis(~ log(.), breaks = -6:6, name = 'log')
+  ) +
+  scale_color_manual(name = 'Class', values = colors, na.translate = FALSE) +
+  geom_line() +
+  geom_point() +
+  guides(color = guide_legend(override.aes = list(linetype = 0))) +
+  labs(y = 'Weekly new confirmed\ncases / 100,000 inhabitants', title = NULL) +
+  theme(legend.position = 'top', axis.text.x=element_text(angle=40, hjust = 1, vjust = 1))
+ggsave(filename=file.path(FIG_DIR, 'logtrends.pdf'), width=8, height=5, units='cm')
+```
+
+Group trajectories, original scale
+```{r}
+ggplot(dtTraj, aes(x = Date, 
+  y = exp(LogNormNewConfirmed), 
+  # ymin = exp(LogNormNewConfirmed - Sigma),
+  # ymax = exp(LogNormNewConfirmed + Sigma),
+  group = Class, 
+  shape = Class, 
+  color = Class)) +
+  scale_x_date(
+    breaks = unique(dtTraj$Date)[seq(1, uniqueN(dtTraj$Date), by = 2)],
+    minor_breaks = unique(dtTraj$Date),
+    labels = date_format('%b-%d')) +
+  scale_color_manual(name = 'Class', values = colors, na.translate = FALSE) +
+  # geom_ribbon(fill = NA, size = .1) +
+  geom_line() +
+  geom_point() +
+  guides(color = guide_legend(override.aes = list(linetype = 0))) +
+  labs(y = 'Weekly new confirmed\ncases / 100,000 inhabitants', title = NULL) +
+  theme(legend.position = 'top', axis.text.x=element_text(angle=40, hjust = 1, vjust = 1))
+ggsave(filename=file.path(FIG_DIR, 'trends.pdf'), width=8, height=5, units='cm')
+```
+
+Sigma group trajectory plot
+```{r}
+ggplot(dtTraj, aes(x = Date, y = Sigma, group = Class, shape = Class, color = Class)) +
+  scale_x_date(
+    breaks = unique(dtTraj$Date)[seq(1, uniqueN(dtTraj$Date), by = 2)],
+    minor_breaks = unique(dtTraj$Date),
+    labels = date_format('%b-%d')) +
+  scale_y_continuous(breaks = pretty_breaks()) +
+  scale_color_manual(name = 'Class', values = colors, na.translate = FALSE) +
+  geom_line() +
+  geom_point() +
+  expand_limits(y = 0) +
+  guides(color = guide_legend(override.aes = list(linetype = 0))) +
+  labs(y = 'log(weekly new confirmed\ncases / 100,000 inhabitants)', title = NULL) +
+  theme(legend.position = 'top', axis.text.x=element_text(angle=40, hjust = 1, vjust = 1))
+ggsave(filename=file.path(FIG_DIR, 'trends_sigma.pdf'), width=8, height=5, units='cm')
+```
+
+## Trace plots
+```{r warning=FALSE, message=FALSE}
+traceplot(bestModel, 
+  par = intersect(names(bestModel), 
+    c('theta', 'intercept_mu', 'beta_mu', 'sigma', 'sdz0_mu', 'sdz_mu', 'cv'))) +
+  scale_color_grey(guide=FALSE) +
+  labs(x = 'Iteration', y = 'Posterior value', title = NULL)
+# ggsave(filename=file.path(MVFIG_DIR, 'trace.pdf'), width=13, height=10, units='cm')
+```
+
+## Parameter table
+```{r}
+parMeans = coef(bestModel)
+origNames = names(parMeans)
+names(parMeans) = stringi::stri_replace_all_fixed(
+  names(parMeans),
+  pattern = sprintf('[%d]', seq_along(clusNames)),
+  replacement = sprintf('[%s]', clusNames),
+  vectorize = FALSE
+) %>%
+  stringi::stri_replace_all_fixed(
+    pattern = sprintf(',%d]', seq_along(clusNames)),
+    replacement = sprintf(',%s]', clusNames),
+    vectorize = FALSE
+  )
+
+# restore sdz_mu names
+names(parMeans)[grepl('^sdz', origNames)] = origNames[grepl('^sdz', origNames)]
+
+parLo = coef(bestModel, fun = function(...) hdi(..., credMass = .8)[1,]) %>%
+  set_names(names(parMeans))
+parHi = coef(bestModel, fun = function(...) hdi(..., credMass = .8)[2,]) %>%
+  set_names(names(parMeans))
+
+dtpar = data.table(
+  Param = names(parMeans), 
+  Est = parMeans, 
+  Low = parLo, 
+  Up = parHi, 
+  key = 'Param'
+)
+
+dtpartxt = copy(dtpar) %>%
+  .[, Est := sigfig(Est)] %>%
+  .[, Low := sigfig(Low)] %>%
+  .[, Up := sigfig(Up)] %>% 
+  .[]
+write.csv(dtpartxt, file = file.path(TABLES_DIR, 'case_params.csv'))
+
+dtpartxt
+```
+
+
+## Classification map
+```{r}
+mapdata = model.data(bestModel) %>% 
+  as.data.table() %>%
+  .[, fips := FIPS] %>%
+  .[, Class := factor(
+    trajectoryAssignments(bestModel)[latrend:::make.idRowIndices(bestModel)],
+    levels = clusterNames(bestModel)[clusOrder],
+    labels = levels(dtTraj$Class))]
+
+plot_usmap(data = unique(mapdata[, .(fips, Class)]), 
+    values = 'Class', 
+    region = 'counties', 
+    size = .1) +
+  scale_fill_manual(name = 'Class', values = mapColors, na.translate = FALSE) +
+  theme(
+    # panel.background = element_rect(fill = 'red'),
+    plot.margin = unit(c(-3, -10, -3, -20), 'mm'),
+    legend.position = c(.87, .07)
+    # legend.position=c(.43, .05),
+    # legend.direction='horizontal'
+    )
+
+ggsave(filename=file.path(FIG_DIR, 'map.pdf'), width=13.5, height=9, units='cm')
+```
+
+Small map
+```{r}
+plot_usmap(data = unique(mapdata[, .(fips, Class)]), 
+    values = 'Class', 
+    region = 'counties', 
+    size = .1) +
+  scale_fill_manual(name = 'Class', values = mapColors, na.translate = FALSE) +
+  theme(
+    # panel.background = element_rect(fill = 'red'),
+    plot.margin = unit(c(-10,-3,-3,-3), 'mm'),
+    legend.position = c(.03, -.1),
+    legend.direction='horizontal'
+    )
+
+ggsave(filename=file.path(FIG_DIR, 'map_small.pdf'), width=8.57, height=6.8, units='cm')
+```
+
+## Comparison to non-parametric model
+```{r}
+# npmod = lcModelWeightedPartition(data,
+#   response = 'LogNormNewConfirmed',
+#   weights = postprob(bestModel))
+
+npmod = lcModelPartition(data,
+  response = 'LogNormNewConfirmed',
+  center = median, #function(x) quantile(x, .33),
+  trajectoryAssignments = trajectoryAssignments(bestModel))
+```
+
+Compare cluster trajectories visually.
+```{r}
+plotClusterTrajectories(npmod) +
+  expand_limits(y = c(-1, 6))
+
+plotClusterTrajectories(bestModel) +
+  expand_limits(y = c(-1, 6))
+```
+
+Data plot comparison
+```{r}
+plot(npmod, trajectories = list(size = .1, alpha=.1), facet = TRUE)
+```
+
+```{r}
+plot(bestModel, trajectories = list(size = .1, alpha=.1), facet = TRUE)
+```
+
+### Distribution
+mean-SD
+```{r}
+data[, .(Mean = mean(LogNormNewConfirmed), 
+  Low = mean(LogNormNewConfirmed) - sd(LogNormNewConfirmed), 
+  High = mean(LogNormNewConfirmed) + sd(LogNormNewConfirmed)), 
+  keyby = .(Time, Cluster)] %>%
+  ggplot(aes(x = Time, y = Mean, ymin = Low, ymax = High)) +
+  geom_ribbon(alpha=.5) +
+  geom_line() +
+  facet_wrap(~ Cluster)
+```
+
+```{r}
+data[, .(Mean = mean(LogNormNewConfirmed), SD = sd(LogNormNewConfirmed)), keyby=.(Cluster)]
+```
+
+
+Quantiles
+```{r}
+data[, as.list(quantile(LogNormNewConfirmed, probs = c(.1, .5, .9))) %>% set_names(c('Low', 'Y', 'High')), keyby = .(Time, Cluster)] %>%
+  ggplot(aes(x = Time, y = Y, ymin = Low, ymax = High)) +
+  geom_ribbon(alpha=.5) +
+  geom_line() +
+  facet_wrap(~ Cluster)
+```
+
+Trajectory-specific SD
+```{r}
+data[, .(SD = sd(diff(LogNormNewConfirmed / sqrt(2)))), keyby=.(Cluster, FIPS)] %>%
+  .[, as.list(summary(SD)), keyby=Cluster] %>%
+  merge(dtTraj[, .(ClusEst = mean(Sigma)), by=Cluster], by = 'Cluster')
+```
+
+## Post-hoc analysis
+Load data
+```{r}
+maskData = read.csv(params$MaskData) %>%
+  setDT() %>%
+  setnames('COUNTYFP', 'fips') %>%
+  .[, MaskUseProb := ALWAYS + .8 * FREQUENTLY + .5 * SOMETIMES + .2 * RARELY] %>% 
+  .[, NoMaskUseProb := 1 - MaskUseProb] %>% 
+  setnames('NEVER', 'MaskUse.Never') %>%
+  setnames('RARELY', 'MaskUse.Rarely') %>%
+  setnames('SOMETIMES', 'MaskUse.Sometimes') %>%
+  setnames('FREQUENTLY', 'MaskUse.Frequently') %>%
+  setnames('ALWAYS', 'MaskUse.Always') %>%
+  .[]
+
+prevData = read.csv(params$PrevalenceData, sep = ';') %>%
+  setDT() %>%
+  setnames('FIPS', 'fips') %>%
+  .[]
+
+densData = read.csv(params$DensityData) %>% 
+  setDT() %>%
+  .[fips > 0] %>%
+  setnames('POP060210', 'PopSqM') %>%
+  setnames('AGE775212', 'Seniors') %>%
+  setnames('SEX255212', 'Females') %>%
+  .[]
+
+countyData = merge(maskData, prevData, by = 'fips') %>%
+  merge(densData, by = 'fips') %>%
+  merge(unique(data, by = 'fips'), by = 'fips')
+```
+
+Compare population size and sensiors
+```{r}
+countyData[, .(Mean = mean(Population), Median = median(Population)), keyby = Cluster]
+
+# median
+mod_lpop = lm(log(Population) ~ Cluster, data = countyData)
+anova(mod_lpop)
+emmeans(mod_lpop, pairwise ~ Cluster, type = 'response')
+```
+
+Compare population density
+```{r}
+countyData[, .(Mean = mean(PopSqM), Median = median(PopSqM)), keyby = Cluster]
+
+# median
+mod_ldens = lm(log(PopSqM) ~ Cluster, data = countyData[PopSqM > 0])
+anova(mod_ldens)
+emmeans(mod_ldens, pairwise ~ Cluster, type = 'response')
+```
+
+Compare any condition
+```{r}
+mod_any = lm(anycondition_prevalence ~ Cluster + Population, data = countyData)
+af = anova(mod_any)
+afss <- af$"Sum Sq"
+print(cbind(af,PctExp=afss/sum(afss)*100))
+
+emmeans(mod_any, pairwise ~ Cluster)
+```
+
+Compare obesity
+```{r}
+mod_ob = lm(Obesity_prevalence ~ Cluster + diabetes_prevalence + CKD_prevalence + Population + COPD_prevalence, data = countyData)
+af = anova(mod_ob)
+afss <- af$"Sum Sq"
+print(cbind(af,PctExp=afss/sum(afss)*100))
+
+emmeans(mod_ob, pairwise ~ Cluster)
+```
+
+Compare diabetes
+```{r}
+mod_dia = lm(diabetes_prevalence ~ Cluster + Obesity_prevalence + CKD_prevalence + Population + COPD_prevalence, data = countyData)
+af = anova(mod_dia)
+afss <- af$"Sum Sq"
+print(cbind(af,PctExp=afss/sum(afss)*100))
+
+emmeans(mod_dia, pairwise ~ Cluster)
+```
+
+Mask usage probability
+```{r}
+mod_mask = lm(MaskUseProb ~ Cluster + Population + PopSqM, data = countyData)
+af = anova(mod_mask)
+afss <- af$"Sum Sq"
+print(cbind(af,PctExp=afss/sum(afss)*100))
+
+emmeans(mod_mask, pairwise ~ Cluster)
+```
+
+
+```{r}
+sessionInfo()
+```
