@@ -3,10 +3,10 @@ title: "Analysis of class enumeration simulation study"
 author: "Niek Den Teuling"
 date: "2022-02-08"
 params:
-  experiment: class_gmmrmv_final2
+  experiment: class_gmm_final2
   simFields: model, data.numGroups, data.fixed, data.random, data.randomSigma, data.cv, data.seed
   clusterFields: nClusters, AlphaCor, ConvProp, AllConverged, thetaMin
-  metricFields: LogLik, mWAIC, p_waic1, p_waic2, BIC
+  metricFields: LogLik, mWAIC, p_waic1, p_waic2, BIC, RunTime
   metric: mWAIC
 output:
   html_document: 
@@ -59,6 +59,8 @@ message(uniqueN(dtModels$i), ' unique data scenarios')
 Determine valid models.
 ```{r}
 dtValidModels = dtModels[abs(AlphaCor) < .9]
+dtValidModels[, mean(RunTime), by = .(model, nClusters)]
+
 message(
   sprintf(
     'Dropped %d/%d invalid models (%g%%)', 

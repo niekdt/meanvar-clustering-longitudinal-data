@@ -72,6 +72,8 @@ dtModels = dtAllModels[
 rhatCols = grep('^Rhat\\.', names(dtModels), value = TRUE)
 
 dtModels[, .(N = .N, CN = sum(ConvProp > CONVPROP_MIN)), keyby = .(SpecModel, nClusters)]
+
+dtModels[, .(RunTimeHours = sigfig(mean(RunTime) / 3600, 3)), by = .(SpecModel, nClusters)][order(SpecModel)]
 ```
 
 # Class enumeration

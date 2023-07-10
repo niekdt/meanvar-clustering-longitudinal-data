@@ -40,6 +40,7 @@ if (anyDuplicated(dtModels, by = allConds)) {
 
 dtModels[, i := seq_len(.N)]
 dtModels[, .N, by = Model]
+dtModels[AllConverged == TRUE, .(RunTime = mean(RunTime)), by = Model]
 
 if (anyNA(dtAllModels$i)) {
   warning('some simulation conditions are undefined (i is NA)')
