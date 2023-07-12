@@ -8,7 +8,8 @@ dtTest = processSim(
   lcMethod == 'lcMethodStanGMM' & data.fixed == 'Equal' & data.cv == 'HighDesc' & nClusters == 2 & data.tStart == 0
 )
 
-# model recovery (only for matching K=nClusters)
+# Model recovery ####
+# only for matching K = nClusters
 gmmFile = file.path(RESULTS_DIR, sprintf('sim_%s_gmm.rds', exp))
 dtGmm = processSim(
   exp, 

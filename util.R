@@ -1,5 +1,4 @@
 sigfig = function(x, digits = 2) {
-  library(weights)
   out = formatC(signif(x, digits = digits), digits = digits, big.mark = ',', format = 'fg', flag = '#')
   # remove leading zero
   out = sub('^(-)?0[.]', '\\1.', out)

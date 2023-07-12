@@ -1,7 +1,7 @@
 ---
 title: "Analysis of case study results"
 author: "Niek Den Teuling"
-date: "`r format(Sys.Date())`"
+date: "2023-07-12"
 params:
   Rhat: 1.1
   ConvProp: .8
@@ -28,6 +28,8 @@ suppressPackageStartupMessages({
   library(usmap)
   library(matrixStats)
   library(emmeans)
+  library(scales)
+  library(splines)
   require(DescTools)
 })
 ```
@@ -355,9 +357,9 @@ names(parMeans) = stringi::stri_replace_all_fixed(
 # restore sdz_mu names
 names(parMeans)[grepl('^sdz', origNames)] = origNames[grepl('^sdz', origNames)]
 
-parLo = coef(bestModel, fun = function(...) hdi(..., credMass = .8)[1,]) %>%
+parLo = coef(bestModel, fun = function(...) hdi(..., credMass = .95)[1,]) %>%
   set_names(names(parMeans))
-parHi = coef(bestModel, fun = function(...) hdi(..., credMass = .8)[2,]) %>%
+parHi = coef(bestModel, fun = function(...) hdi(..., credMass = .95)[2,]) %>%
   set_names(names(parMeans))
 
 dtpar = data.table(

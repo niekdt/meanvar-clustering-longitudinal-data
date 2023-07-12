@@ -1,4 +1,6 @@
-library(mvnfast)
+library(data.table)
+library(assertthat)
+library(magrittr)
 
 #' @param numObs Shared number of observations
 #' @param fixed Shared fixed effects
@@ -6,22 +8,26 @@ library(mvnfast)
 #' @param tEnd Shared end time
 #' @param fe List of group-specific fixed effects
 #' @param sigma Scalar (or vector) of (group-specific) sigma.
-gtsdata_create_repmeas = function(sizes, 
-                           numObs, 
-                           fixed = ~ Time,
-                           tStart = 0, 
-                           tEnd = 1,
-                           groupNames = LETTERS[seq_along(sizes)]) {
-  assert_that(length(sizes) > 0,
-              all(sapply(sizes, is.count)),
-              all(sizes > 0),
-              is.count(numObs),
-              is.number(tStart),
-              is.number(tEnd),
-              tStart < tEnd,
-              is.character(groupNames),
-              length(groupNames) == length(sizes),
-              uniqueN(groupNames) == length(sizes))
+gtsdata_create_repmeas = function(
+    sizes, 
+    numObs, 
+    fixed = ~ Time,
+    tStart = 0, 
+    tEnd = 1,
+    groupNames = LETTERS[seq_along(sizes)]
+) {
+  assert_that(
+    length(sizes) > 0,
+    all(sapply(sizes, is.count)),
+    all(sizes > 0),
+    is.count(numObs),
+    is.number(tStart),
+    is.number(tEnd),
+    tStart < tEnd,
+    is.character(groupNames),
+    length(groupNames) == length(sizes),
+    uniqueN(groupNames) == length(sizes)
+  )
   
   G = length(sizes)
 
@@ -29,10 +35,12 @@ gtsdata_create_repmeas = function(sizes,
     tsdata_create_repmeas(group=name_g, numTraj=size_g, numObs=numObs, tStart=tStart, tEnd=tEnd)
   }
   
-  gtsdata = mapply(gengroup, 
-                  size_g = sizes,
-                  name_g = groupNames,
-                  SIMPLIFY = FALSE) %>% 
+  gtsdata = mapply(
+    gengroup, 
+    size_g = sizes,
+    name_g = groupNames,
+    SIMPLIFY = FALSE
+  ) %>% 
     tsdata_merge()
   
   return(gtsdata[])
@@ -52,6 +60,7 @@ gtsdata_apply = function(gtsdata, FUN, ...) {
   
   newdata = do.call(mapply, c(FUN = FUN, data = list(groupDataList), args, SIMPLIFY = FALSE)) %>%
     tsdata_merge()
+  
   return(newdata)
 }
 
@@ -82,9 +91,11 @@ gtsdata_add_random = function(gtsdata, formula, covMat) {
 # Sigma ####
 #' @param sigma standard deviation for the random effects
 gtsdata_add_random_sigma_intercept = function(gtsdata, sigma) {
-  assert_that(is.numeric(sigma),
-              all(sigma >= 0),
-              all(gtsdata$Sigma > 0))
+  assert_that(
+    is.numeric(sigma),
+    all(sigma >= 0),
+    all(gtsdata$Sigma > 0)
+  )
   
   gtsdata_apply(gtsdata, FUN = function(data, sigma_g) {
       tsdata_add_random_sigma_intercept(data, sigma = sigma_g)
@@ -96,53 +107,14 @@ gtsdata_add_random_sigma_intercept = function(gtsdata, sigma) {
 #' @title Add group-specific heteroskedasticity to the data
 #' @param cv Group-specific coefficient of variation, or scalar
 gtsdata_add_meanVariance = function(gtsdata, cv) {
-  assert_that(is.numeric(cv),
-              all(gtsdata$Sigma > 0))
+  assert_that(
+    is.numeric(cv),
+    all(gtsdata$Sigma > 0)
+  )
 
   gtsdata_apply(gtsdata, FUN = function(data, cv_g) {
       data[, Sigma := exp(log(Sigma) + cv_g * Mu)]
     }, 
     cv_g = cv
   )
-}
-
-
-# old
-library(mvnfast)
-library(gamlss.dist)
-library(R.utils)
-gen_tsdata_multilevel = function(seed=NULL, 
-                                 numTraj=100, 
-                                 numObs=10, 
-                                 tStart=0,
-                                 tEnd=1,
-                                 mu=~1 + I(Time^2),
-                                 muCoefs=c(1, -1),
-                                 muRandom=~1,
-                                 muRandomCov=.1^2,
-                                 muLink=I,
-                                 sigma=~1,
-                                 sigmaCoefs=.01,
-                                 sigmaRandom=~1,
-                                 sigmaRandomCov=.1^2,
-                                 sigmaLink=exp,
-                                 response=rNO,
-                                 name='All',
-                                 ... #additional arguments passed to response()
-) {
-  set.seed(seed)
-  muGroupR = rmvn(numTraj, mu=0, sigma=muRandomCov)
-  sigmaGroupR = rmvn(numTraj, mu=0, sigma=sigmaRandomCov)
-  
-  tsdata = tsdata_create_repmeas(group=name, numTraj=numTraj, numObs=numObs, tStart=tStart, tEnd=tEnd) %>%
-    tsdata_add_formula_fixed(mu, coefs=muCoefs, what='muRaw') %>%
-    tsdata_add_formula_random(muRandom, tsCoefs=muGroupR, what='muRaw') %>%
-    tsdata_add_formula_fixed(sigma, coefs=sigmaCoefs, what='sigmaRaw') %>%
-    tsdata_add_formula_random(sigmaRandom, tsCoefs=sigmaGroupR, what='sigmaRaw')
-  
-  tsdata[, mu := muLink(muRaw)]
-  tsdata[, sigma := sigmaLink(sigmaRaw)]
-  tsdata[, Value := doCall(response, n=.N, args=c(.SD, list(...)))]
-  
-  return(tsdata)
 }

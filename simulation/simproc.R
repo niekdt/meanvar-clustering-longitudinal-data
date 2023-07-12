@@ -1,3 +1,8 @@
+library(latrend)
+library(data.table)
+library(assertthat)
+library(magrittr)
+
 # Simulation study ####
 #' @description Process simulation output of models into a results table
 #' @param exp The experiment name
@@ -179,7 +184,7 @@ processSimModel = function(
   result = c(result, unlist(paramResults))
   
   # HDI
-  hdiMat = hdi(model, parNames, credMass = .8)
+  hdiMat = hdi(model, parNames, credMass = .95)
   assert_that(is.matrix(hdiMat))
   hdiCoefs = mapSimDataCoefs(colnames(hdiMat))
   hdiVec = as.numeric(hdiMat) %>%

@@ -1,4 +1,5 @@
 library(latrend)
+library(rstan)
 setClass('lcMethodStan', contains = 'lcMethod')
 
 #' @param algorithm algorithm supported by sampling(), vb(), or optimizing()
@@ -136,9 +137,9 @@ setMethod('preFit', signature('lcMethodStan'), function(method, data, envir, ver
   }
   
   times = data[[method$time]] %>% unique() %>% sort()
-  message('Groups (I): ', comma(outEnvir$standata$I))
+  message('Groups (I): ', scales::comma(outEnvir$standata$I))
   message('Time points: ', length(times))
-  message('Observations (N): ', comma(outEnvir$standata$N))
+  message('Observations (N): ', scales::comma(outEnvir$standata$N))
   
   outEnvir
 })

@@ -10,6 +10,8 @@ queue = Sys.getenv('JOBQUEUE')
 
 source('include.R')
 
+library(rstan)
+
 message('Stan self-test')
 cmod = stan_model(
   file = file.path(getwd(), 'loglik', 'gmm_full_diag_mloglik_z.stan'), 

@@ -1,7 +1,6 @@
 library(data.table)
-library(polynom)
-library(gamlss.dist)
-library(MASS)
+library(assertthat)
+library(magrittr)
 
 #' @description  Creates dataset comprising repeated measures data (regularly-spaced time series)
 #' @param group Name for this group of time series
@@ -10,11 +9,18 @@ library(MASS)
 #' @param tStart
 #' @param tEnd
 #' @param trajLabels character vector of the trajectory names
-tsdata_create_repmeas = function(group='ts', numTraj, numObs, 
-                                 tStart=0, tEnd=numObs-1, 
-                                 trajLabels=paste0(group, '.', 1:numTraj)) {
-  assert_that(is.count(numObs),
-              is.count(numTraj))
+tsdata_create_repmeas = function(
+  group='ts', 
+  numTraj, 
+  numObs, 
+  tStart=0, 
+  tEnd=numObs-1, 
+  trajLabels=paste0(group, '.', 1:numTraj)
+) {
+  assert_that(
+    is.count(numObs),
+    is.count(numTraj)
+  )
     
   if(length(trajLabels) == 1 && numTraj > 1) {
     trajLabels = paste0(trajLabels, '.', 1:numTraj)
@@ -31,21 +37,24 @@ tsdata_create_repmeas = function(group='ts', numTraj, numObs,
       Mu=0,
       Sigma=0,
       Value=0,
-      key=c('Group', 'Id', 'Time'))
+      key=c('Group', 'Id', 'Time')
+  )
 
   #group trend
   #TODO include average of covariates
-  dt_trend = data.table(Group=factor(group),
-                        Time=seq(tStart*1.0, tEnd*1.0, length.out=numObs),
-                        Mu=0.0,
-                        Sigma=0.0,
-                        Value=0.0)
+  dt_trend = data.table(
+    Group=factor(group),
+    Time=seq(tStart*1.0, tEnd*1.0, length.out=numObs),
+    Mu=0.0,
+    Sigma=0.0,
+    Value=0.0
+  )
   setattr(dt_meas, 'trend', dt_trend)
   return(dt_meas)
 }
 
 #' @description Generate the response from the distributional parameters (mu and sigma) at each observation time.
-tsdata_response = function(data, family = rNO) {
+tsdata_response = function(data, family = gamlss.dist::rNO) {
   data[, Value := family(.N, mu = Mu, sigma = Sigma)][]
 }
 
@@ -55,13 +64,18 @@ tsdata_response = function(data, family = rNO) {
 #' @param coefmat the coefficients for each of the formula terms
 tsdata_add_fixed = function(data, formula, coefs, what='Mu') {
   numTraj = uniqueN(data$Id)
-  assert_that(is(formula, 'formula'), 
-              !attr(terms(formula), 'response'),
-              is.numeric(coefs),
-              !is.matrix(coefs))
+  assert_that(
+    is(formula, 'formula'), 
+    !attr(terms(formula), 'response'),
+    is.numeric(coefs),
+    !is.matrix(coefs)
+  )
   
   X = model.matrix(formula, data=data)
-  assert_that(length(coefs) == ncol(X), msg='number of coefficients does not match the model')
+  assert_that(
+    length(coefs) == ncol(X), 
+    msg='number of coefficients does not match the model'
+  )
   
   if(has_name(data, what)) {
     data[, c(what) := get(what) + colSums(coefs * t(X))]
@@ -69,7 +83,7 @@ tsdata_add_fixed = function(data, formula, coefs, what='Mu') {
     data[, c(what) := colSums(coefs * t(X))]
   }
   
-  dt_trend = tsdata_trends(data) %>% copy
+  dt_trend = tsdata_trends(data) %>% copy()
   assert_that(!is.null(dt_trend), msg='missing trend data')
   Xtrend = model.matrix(formula, data=dt_trend)
   if(has_name(dt_trend, what)) {
@@ -98,14 +112,18 @@ tsdata_add_random_intercept = function(data, sigma, what='Mu') {
 #' @description Add trajectory-specific effects to the data
 #' @param formula the formula to evaluate on the data, e.g. ~ poly(Time, 2, raw=T)
 tsdata_add_random = function(data, formula, covMat, what='Mu') {
-  assert_that(is(formula, 'formula'), 
-              !attr(terms(formula), 'response'))
+  assert_that(
+    is(formula, 'formula'), 
+    !attr(terms(formula), 'response')
+  )
   numTraj = uniqueN(data$Id)
   X = model.matrix(formula, data=data)
-  tsCoefs = rmvn(numTraj, mu=rep(0, nrow(covMat)), sigma=covMat)
+  tsCoefs = mvnfast::rmvn(numTraj, mu=rep(0, nrow(covMat)), sigma=covMat)
   
-  assert_that(is.matrix(tsCoefs),
-              has_name(data, what))
+  assert_that(
+    is.matrix(tsCoefs),
+    has_name(data, what)
+  )
   assert_that(nrow(tsCoefs) == numTraj, msg='number of coefficient rows does not match the number of trajectories')
   assert_that(ncol(tsCoefs) == ncol(X), msg='number of coefficients does not match the model')
   
@@ -121,9 +139,11 @@ tsdata_add_random = function(data, formula, covMat, what='Mu') {
 #' @details Currently only supports random sigma intercept
 #' @param sigmaCovMat The shared variance-covariance matrix for the sigma random effects (1 x 1)
 tsdata_add_random_sigma_intercept = function(data, sigma) {
-  assert_that(is.number(sigma),
-              sigma >= 0,
-              all(data$Sigma > 0))
+  assert_that(
+    is.number(sigma),
+    sigma >= 0,
+    all(data$Sigma > 0)
+  )
   
   numTraj = uniqueN(data$Id)
   tsIntercepts = rnorm(numTraj, mean = 0, sd = sigma)
@@ -137,8 +157,10 @@ tsdata_add_random_sigma_intercept = function(data, sigma) {
 #' @title Add group-specific heteroskedasticity to the data
 #' @param cv Coefficient of variation
 tsdata_add_meanVariance = function(data, cv) {
-  assert_that(is.numeric(cv),
-              all(data$Sigma > 0))
+  assert_that(
+    is.numeric(cv),
+    all(data$Sigma > 0)
+  )
   
  data[, Sigma := exp(log(Sigma) + cv * Mu)]
  return(data[])
@@ -151,17 +173,17 @@ tsdata_add_normnoise_cv = function(data, cv=1) {
 }
 
 tsdata_add_noise = function(data, rfun=rnorm, ...) {
-    data[, Value := Value + rfun(.N, ...)]
+  data[, Value := Value + rfun(.N, ...)]
 }
 
 tsdata_add_lognoise = function(data, meanlog, sdlog, center=FALSE) {
-    stopifnot(sdlog >= 0)
-    data[, Value := Value + rlnorm(.N, meanlog=meanlog, sdlog=sdlog)]
-    if(center) {
-        data[, Value := Value - qlnorm(.5, meanlog=meanlog, sdlog=sdlog)]
-    }
+  stopifnot(sdlog >= 0)
+  data[, Value := Value + rlnorm(.N, meanlog=meanlog, sdlog=sdlog)]
+  if(center) {
+      data[, Value := Value - qlnorm(.5, meanlog=meanlog, sdlog=sdlog)]
+  }
 }
 
 tsdata_add_noise_arima = function(data, ar=NULL, ma=NULL, sd=1, order=NULL) {
-    data[, Value := Value + arima.sim(n=.N, list(ar=ar, ma=ma, sd=sd)) %>% as.numeric, by=Id]
+  data[, Value := Value + stats::arima.sim(n=.N, list(ar=ar, ma=ma, sd=sd)) %>% as.numeric(), by=Id]
 }

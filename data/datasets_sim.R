@@ -93,18 +93,18 @@ dataOptions$`3` = list(
 )
 
 
-
-if(sys.nframe() == 0L) {
+if (sys.nframe() == 0L) {
   # Generate and visualize
-  data = gen_gtsdata(numGroups = 2, 
-                     numTraj = 100, 
-                     numObs = 15, 
-                     fixed = 'Equal', 
-                     random = 'Med2', 
-                     sigma = 'High', 
-                     randomSigma='Med', 
-                     cv='HighDesc',
-                     seed = 1) %T>% 
+  data = gen_gtsdata(
+    numGroups = 2, 
+    numTraj = 100, 
+    numObs = 15, 
+    fixed = 'Equal', 
+    random = 'Med2', 
+    sigma = 'High', 
+    randomSigma='Med', 
+    cv='HighDesc',
+    seed = 1
+  ) %T>% 
     plot_gtsdata()
-  # lmer(Value ~ Time + I(Time^2) + (Time | Id), data = data) %>% summary()
 }

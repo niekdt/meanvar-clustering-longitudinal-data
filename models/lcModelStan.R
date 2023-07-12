@@ -1,4 +1,10 @@
-library(gridExtra)
+library(latrend)
+library(data.table)
+library(magrittr)
+library(assertthat)
+library(rstan)
+library(HDInterval)
+
 setClass('lcModelStan', representation=list(permutations='list'), contains='lcModel')
 
 # dimension order: samples, row, columns, chain
@@ -161,9 +167,11 @@ as.data.table.lcModelStan = function(x, pars = coefNames(x), ...) {
 
 #' @inheritDotParams as.array.lcModelStan
 aggregate.lcModelStan = function(x, par, fun, ...) {
-  assert_that(is.lcModel(x),
+  assert_that(
+    is.lcModel(x),
     is.character(par),
-    par %in% names(x))
+    par %in% names(x)
+  )
   stanmod = x@model
   nChains = nChains(x)
   pardim = stanmod@par_dims[[par]]
@@ -248,6 +256,7 @@ validate.lcModelStan = function(model, ...) {
 }
 
 plotChains = function(x, ..., chains = 1:nChains(x)) {
+  library(gridExtra)
   assert_that(is.lcModel(x))
   pList = lapply(chains, function(i) plot(x, ..., chains = i) + labs(title=NULL, subtitle = paste0('Chain ', i)))
   
@@ -337,7 +346,7 @@ hdi.lcModelStan = function(object, par, credMass = .95, ...) {
   }
   
   if (length(par) > 1) {
-    out = lapply(par, function(p) hdi(object, p, credMass = credMass, ...))
+    out = lapply(par, function(p) HDInterval::hdi(object, p, credMass = credMass, ...))
     return(do.call(cbind, out))
   }
   
@@ -346,11 +355,11 @@ hdi.lcModelStan = function(object, par, credMass = .95, ...) {
   
   if (length(dims) == 0) {
     # fix for models which did not define a param as a vector
-    boundsArray = hdi(as.numeric(sampleArray), credMass = credMass, ...)
+    boundsArray = HDInterval::hdi(as.numeric(sampleArray), credMass = credMass, ...)
     parNames = paste0(par, '[1]')
   }
   else { 
-    boundsArray = apply(sampleArray, dims, function(a) hdi(as.numeric(a), credMass = credMass, ...))
+    boundsArray = apply(sampleArray, dims, function(a) HDInterval::hdi(as.numeric(a), credMass = credMass, ...))
     parNames = attr(sampleArray, 'parNames')
   }
   
@@ -361,20 +370,6 @@ hdi.lcModelStan = function(object, par, credMass = .95, ...) {
   return(boundsMat)
 }
 
-sdi = function(object, par, credMass = .95, ...) {
-  assert_that(credMass > 0 & credMass <= 1)
-  sampleArray = as.array(object, par = par)
-  dims = which(not(names(dimnames(sampleArray)) %in% c('Sample', 'Chain')))
-  
-  pbounds = .5 + c(-1, 1) * credMass / 2
-  boundsArray = apply(sampleArray, dims, function(a) quantile(as.numeric(a), probs = pbounds, ...))
-  
-  boundsMat = matrix(boundsArray, nrow = 2)
-  rownames(boundsMat) = c('Lower', 'Upper')
-  colnames(boundsMat) = attr(sampleArray, 'parNames')
-  
-  return(boundsMat)
-}
 
 coef.lcModelStan = function(object, fun=mean, ...) {
   pars = coefNames(object, ...)
@@ -474,11 +469,13 @@ permute = function(object, ...) {
 }
 
 permute.lcModelStan = function(object, chain, permutations) {
-  assert_that(is.lcModel(object),
+  assert_that(
+    is.lcModel(object),
     is.integer(permutations),
     is.count(chain),
     chain <= nChains(object),
-    length(permutations) == nClusters(object))
+    length(permutations) == nClusters(object)
+  )
   
   if (length(object@permutations) == 0) {
     object@permutations = replicate(nChains(object), seq_len(nClusters(object)), simplify = FALSE)
@@ -491,7 +488,6 @@ permute.lcModelStan = function(object, chain, permutations) {
 
 autopermute = function(object, method = 'ECR-ITERATIVE-1') {
   library(label.switching)
-  library(matrixStats)
   message('Auto-permuting Stan model using ', method, '...')
   if (nClusters(object) == 1) {
     message('Only 1 cluster. Nothing to permute')
@@ -503,29 +499,32 @@ autopermute = function(object, method = 'ECR-ITERATIVE-1') {
   
   if (hasName(data, 'Group')) {
     refClusters = data[, first(Group), keyby=Id]$V1 %>% as.integer()
-    out1 = label.switching(method = method, 
+    out1 = label.switching::label.switching(
+      method = method, 
       z = object@model@.MISC$classifications[,,1], 
       K = nClusters(object),
       groundTruth = refClusters)
     perms = out1$permutations[[method]] %>% 
-      colMedians() %>% 
+      matrixStats::colMedians() %>% 
       as.integer()
     object = permute(object, chain = 1, permutations = perms)
   } else {
-    ref = label.switching(method = method, 
+    ref = label.switching::label.switching(
+      method = method, 
       z = object@model@.MISC$classifications[,,1], 
-      K = nClusters(object))
+      K = nClusters(object)
+    )
     refClusters = as.integer(ref$clusters[method, ])  
   }
 
   if (nChains(object) > 1) {
     for (ic in seq.int(2, nChains(object), by=1)) {
-      kOut = label.switching(method = 'ECR-ITERATIVE-1', 
+      kOut = label.switching::label.switching(method = 'ECR-ITERATIVE-1', 
         z = object@model@.MISC$classifications[,,ic], 
         K = nClusters(object), 
         groundTruth = refClusters)
       perms = kOut$permutations[[method]] %>% 
-        colMedians() %>% 
+        matrixStats::colMedians() %>% 
         as.integer()
       object = permute(object, chain = ic, permutations = perms)
     }
@@ -835,7 +834,7 @@ lppd.NULL = function(object, ...) {
 
 lppd.matrix = function(object, ...) {
   S = nrow(object)
-  sum(colLogSumExps(object) - log(S))
+  sum(matrixStats::colLogSumExps(object) - log(S))
 }
 
 lppd.lcModelStan = function(object, ...) {
@@ -900,7 +899,7 @@ p_waic2.lcModelStan = function(object, ...) {
 # see Gelman 2013
 p_waic1.matrix = function(object, ...) {
   S = nrow(object)
-  lppd_i = colLogSumExps(object) - log(S)
+  lppd_i = matrixStats::colLogSumExps(object) - log(S)
   mean_ll_i = colMeans(object)
   
   2 * sum(lppd_i - mean_ll_i)

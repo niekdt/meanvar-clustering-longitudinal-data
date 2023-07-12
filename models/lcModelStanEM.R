@@ -1,3 +1,5 @@
+library(assertthat)
+
 setClass('lcModelStanEM', contains='lcModelStan')
 
 names.lcModelStanEM = function(x) {

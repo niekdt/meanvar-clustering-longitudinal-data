@@ -14,9 +14,11 @@ sim_init = function() {
 	
   host_info = read.table(REDIS_HOST_FILE, stringsAsFactors=FALSE)
   
-  options(redis.host = host_info$V1,
-          redis.port = as.integer(host_info$V2),
-          mc.cores = 1)
+  options(
+    redis.host = host_info$V1,
+    redis.port = as.integer(host_info$V2),
+    mc.cores = 1
+  )
   
   message('Connecting to ', host_info$V1, ':', host_info$V2, '...')
   

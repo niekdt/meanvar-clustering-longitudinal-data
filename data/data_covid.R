@@ -1,3 +1,6 @@
+library(data.table)
+library(magrittr)
+
 load_csse_covid19_data = function(dir = COVID_DATA_DIR, filter = TRUE) {
   dataDir = dir
   library(scales)

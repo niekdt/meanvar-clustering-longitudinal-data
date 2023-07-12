@@ -1,3 +1,7 @@
+library(data.table)
+library(assertthat)
+library(magrittr)
+
 #' @description Get the group trend(s) table
 tsdata_trends = function(data) {
   attr(data, 'trend')
@@ -34,7 +38,9 @@ tsdata_merge = function(datasets) {
   stopifnot(is.list(datasets))
   
   # construct group trends table
-  dt_trends = lapply(datasets, attr, 'trend') %>% rbindlist %>% setkey(Group, Time)
+  dt_trends = lapply(datasets, attr, 'trend') %>% 
+    rbindlist() %>% 
+    setkey(Group, Time)
   
   # create merged dataset
   dt_all = do.call(rbind, datasets) %>%
@@ -85,6 +91,7 @@ tsdata_matrix = function(data, value='Value') {
 
 
 tsdata_plot = function(data, response='Value', trends=TRUE, facet=TRUE, alpha=1) {
+  library(ggplot2)
   p = ggplot() +
     geom_line(data=data, aes_string(x='Time', y=response, color='Group', group='Id'), alpha=alpha) +
     labs(title=sprintf('Trajectories for %s', response))

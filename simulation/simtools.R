@@ -1,3 +1,9 @@
+library(latrend)
+library(rstan)
+library(data.table)
+library(assertthat)
+library(magrittr)
+
 generate_method_cases = function(methodClass, dataNames, model, ..., seed = 1, chains = 1) {
   assert_that(is.character(methodClass))
   mfun = get(methodClass)
