@@ -35,3 +35,8 @@ In case you want to run the simulation or case study, proceed with the next step
 6. Run `worker.R` as one or more stand-alone processes, e.g., by executing `worker6.bat` on Windows.
 7. Wait a long time for computations to finish.
 8. Collect and process results (in case of the simulation study) by running `process_results.R`.
+
+# Case study results
+![image](https://github.com/niekdt/meanvar-clustering-longitudinal-data/assets/8193083/6531a62d-e94e-4e8b-aed3-29358014d081)
+
+![image](https://github.com/niekdt/meanvar-clustering-longitudinal-data/assets/8193083/a22a21de-f961-4953-8d97-dd6d180cf52e)
