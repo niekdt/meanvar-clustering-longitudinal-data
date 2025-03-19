@@ -31,10 +31,20 @@ In case you want to run the simulation or case study, proceed with the next step
 2. Configure Redis and the credentials in the `.Rprofile` file.
 3. Run Redis
 4. Test if you can connect from R by running `sim_init()`.  
-5. Submit jobs, e.g., by running `sim_all.R`.
-6. Run `worker.R` as one or more stand-alone processes, e.g., by executing `worker6.bat` on Windows.
+5. Submit jobs, e.g., by running [sim_all.R](simulation/sim_all.R).
+6. Run [worker.R](redis/worker.R) as one or more stand-alone processes, e.g., by executing `worker6.bat` on Windows.
 7. Wait a long time for computations to finish.
-8. Collect and process results (in case of the simulation study) by running `process_results.R`.
+8. Collect and process results (in case of the simulation study) by running [process_results.R](simulation/process_results.R).
+
+# Data
+## Simulation data
+The simulation datasets for a given simulation scenario can be generated using the `gen_gtsdata()` function located in [data/util_datasets.R](data/util_datasets.R)`.
+The simulation settings are stored in [data/datasets_sim.R](data/datasets_sim.R).
+
+## Case study data
+The case study data was obtained from the [COVID-19 Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University](https://github.com/CSSEGISandData/COVID-19).
+
+To obtain the final processed dataset used in our case study analysis, run the  `load_csse_covid19_data()` function located in [data/data_covid.R](data/data_covid.R).
 
 # Case study results
 ![image](https://github.com/niekdt/meanvar-clustering-longitudinal-data/assets/8193083/6531a62d-e94e-4e8b-aed3-29358014d081)
