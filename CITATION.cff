@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+preferred-citation:
+  type: article
+  title: "Latent-class trajectory modeling with a heterogeneous mean-variance relation"
+  year: 2025
+  authors:
+  - family-names: "Den Teuling"
+    given-names: "Niek G. P."
+    orcid: "https://orcid.org/0000-0003-1026-5080"
+  - family-names: "Ungolo"
+    given-names: "Francesco"
+    orcid: "https://orcid.org/0000-0002-6642-0425"
+  - family-names: "Pauws"
+    given-names: "Steffen C."
+    orcid: "https://orcid.org/0000-0003-2257-9239"
+  - family-names: "van den Heuvel"
+    given-names: "Edwin R."
+    orcid: "https://orcid.org/0000-0001-9157-7224"
+  volume: 210
+  doi: 10.1016/j.csda.2025.108199
+  url: "https://github.com/niekdt/meanvar-clustering-longitudinal-data"
